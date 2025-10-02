@@ -73,6 +73,13 @@ impl Debug for FixedTimespan {
     }
 }
 
+#[cfg(feature = "defmt")]
+impl defmt::Format for FixedTimespan {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{:?}", self.name);
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct TzOffset {
     tz: Tz,
@@ -201,6 +208,13 @@ impl Display for TzOffset {
 impl Debug for TzOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         Debug::fmt(&self.offset, f)
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for TzOffset {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{:?}", self.offset);
     }
 }
 
