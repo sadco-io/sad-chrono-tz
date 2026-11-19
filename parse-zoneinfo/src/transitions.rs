@@ -385,7 +385,7 @@ impl FixedTimespanSetBuilder {
     }
 
     fn build(mut self) -> Option<FixedTimespanSet> {
-        self.rest.sort_by(|a, b| a.0.cmp(&b.0));
+        self.rest.sort_by_key(|a| a.0);
 
         let first = match self.first {
             Some(ft) => ft,

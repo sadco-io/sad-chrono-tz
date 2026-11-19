@@ -218,7 +218,7 @@ impl FromStr for Tz {{
     #[cfg(feature = "case-insensitive")]
     /// Parses a timezone string in a case-insensitive way
     pub fn from_str_insensitive(s: &str) -> Result<Self, ParseError> {{
-        return TIMEZONES_UNCASED.get(s.into()).cloned().ok_or(ParseError(()));
+        TIMEZONES_UNCASED.get(s.into()).cloned().ok_or(ParseError(()))
     }}"#
         )?;
     }
