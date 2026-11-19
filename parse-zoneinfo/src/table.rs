@@ -339,13 +339,16 @@ impl Format {
                 ref standard,
                 ref dst,
             } => {
-                if standard.len() > max_template_len || dst.len() > max_template_len {
+                if standard.len().saturating_add(1).saturating_add(dst.len()) > max_template_len {
                     return None;
                 }
                 let chosen = if dst_offset == 0 { standard } else { dst };
                 (chosen.len() <= max_len).then(|| chosen.clone())
             }
             Format::Offset => {
+                if 2 > max_template_len {
+                    return None;
+                }
                 let offset = utc_offset as i128 + dst_offset as i128;
                 let sign = if offset < 0 { '-' } else { '+' };
                 let off = offset.unsigned_abs();
@@ -775,6 +778,43 @@ mod tests {
         );
         let oversized_const = Format::new(&"A".repeat(MAX_FORMAT_TEMPLATE_LEN + 1));
         assert_eq!(oversized_const.try_format(0, 0, None, usize::MAX), None);
+
+        // Exact 256-byte complete-template boundary for Constant, Placeholder, and Alternate.
+        let exact_const = Format::new(&"A".repeat(MAX_FORMAT_TEMPLATE_LEN));
+        assert_eq!(
+            exact_const.try_format(0, 0, None, MAX_FORMAT_TEMPLATE_LEN),
+            Some("A".repeat(MAX_FORMAT_TEMPLATE_LEN))
+        );
+
+        let ph_256 = Format::new(&format!("{}%s{}", "A".repeat(127), "B".repeat(127)));
+        assert_eq!(
+            ph_256.try_format(0, 0, Some(&"S".to_owned()), MAX_FORMAT_TEMPLATE_LEN),
+            Some(format!("{}S{}", "A".repeat(127), "B".repeat(127)))
+        );
+        let ph_257 = Format::new(&format!("{}%s{}", "A".repeat(128), "B".repeat(127)));
+        assert_eq!(
+            ph_257.try_format(0, 0, Some(&"S".to_owned()), usize::MAX),
+            None
+        );
+
+        let alt_256 = Format::new(&format!("{}/{}", "A".repeat(128), "B".repeat(127)));
+        assert_eq!(
+            alt_256.try_format(0, 0, None, MAX_FORMAT_TEMPLATE_LEN),
+            Some("A".repeat(128))
+        );
+        assert_eq!(
+            alt_256.try_format(0, 3600, None, MAX_FORMAT_TEMPLATE_LEN),
+            Some("B".repeat(127))
+        );
+        assert_eq!(alt_256.try_format(0, 0, None, 127), None);
+
+        let alt_257 = Format::new(&format!("{}/{}", "A".repeat(128), "B".repeat(128)));
+        assert_eq!(alt_257.try_format(0, 0, None, usize::MAX), None);
+        assert_eq!(alt_257.try_format(0, 3600, None, usize::MAX), None);
+
+        let alt_258 = Format::new(&format!("{}/{}", "A".repeat(129), "B".repeat(128)));
+        assert_eq!(alt_258.try_format(0, 0, None, usize::MAX), None);
+        assert_eq!(alt_258.try_format(0, 3600, None, usize::MAX), None);
     }
 
     #[test]

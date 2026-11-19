@@ -385,46 +385,70 @@ impl DaySpec {
                 if day < 1 || day > length {
                     return Err(Error::InvalidDaySpec(day.to_string()));
                 }
-                let d = day as i16;
-                let (next_year, next_month) = match month.next_in_year() {
-                    Ok(m) => (year, m),
-                    Err(_) => (year + 1, Month::January),
-                };
-
-                for inner_day in d..=d + 6 {
-                    if inner_day >= 1
-                        && inner_day <= length as i16
-                        && Weekday::calculate_i128(year, month, inner_day as i8) == weekday
-                    {
-                        return Ok((year, month, inner_day as i8));
-                    } else if inner_day > length as i16 {
-                        let candidate = inner_day - length as i16;
-                        let next_length = next_month.length(is_leap_i128(next_year)) as i16;
-                        if (1..=next_length).contains(&candidate)
-                            && Weekday::calculate_i128(next_year, next_month, candidate as i8)
-                                == weekday
-                        {
-                            return Ok((next_year, next_month, candidate as i8));
-                        }
-                    }
-                }
-                Err(Error::InvalidDaySpec(day.to_string()))
+                Self::resolve_first_on_or_after_i128(year, month, length, weekday, day)
+                    .ok_or_else(|| Error::InvalidDaySpec(day.to_string()))
             }
         }
     }
 
+    fn resolve_first_on_or_after_i128(
+        year: i128,
+        month: Month,
+        length: i8,
+        weekday: Weekday,
+        day: i8,
+    ) -> Option<(i128, Month, i8)> {
+        let d = day as i16;
+        let (next_year, next_month) = match month.next_in_year() {
+            Ok(m) => (year, m),
+            Err(_) => (year + 1, Month::January),
+        };
+        let next_length = next_month.length(is_leap_i128(next_year)) as i16;
+
+        for inner_day in d..=d + 6 {
+            if inner_day >= 1
+                && inner_day <= length as i16
+                && Weekday::calculate_i128(year, month, inner_day as i8) == weekday
+            {
+                return Some((year, month, inner_day as i8));
+            } else if inner_day > length as i16 {
+                let candidate = inner_day - length as i16;
+                if (1..=next_length).contains(&candidate)
+                    && Weekday::calculate_i128(next_year, next_month, candidate as i8) == weekday
+                {
+                    return Some((next_year, next_month, candidate as i8));
+                }
+            }
+        }
+        None
+    }
+
     fn resolve_day(&self, year: i64, month: Month) -> (i64, Month, i8) {
-        match self.resolve_day_i128(year as i128, month) {
+        let y128 = year as i128;
+        match self.resolve_day_i128(y128, month) {
             Ok((ry, rm, rd)) => (ry.clamp(i64::MIN as i128, i64::MAX as i128) as i64, rm, rd),
-            Err(_) => (
-                year,
-                month,
-                match *self {
-                    DaySpec::Ordinal(d) => d,
-                    DaySpec::LastOnOrBefore(_, d) | DaySpec::FirstOnOrAfter(_, d) => d,
-                    DaySpec::Last(_) => 1,
-                },
-            ),
+            Err(_) => {
+                let length = month.length(is_leap_i128(y128));
+                if let DaySpec::FirstOnOrAfter(weekday, day) = *self {
+                    if (1..=31).contains(&day) {
+                        if let Some((ry, rm, rd)) =
+                            Self::resolve_first_on_or_after_i128(y128, month, length, weekday, day)
+                        {
+                            return (ry.clamp(i64::MIN as i128, i64::MAX as i128) as i64, rm, rd);
+                        }
+                    }
+                }
+                (
+                    year,
+                    month,
+                    match *self {
+                        DaySpec::Ordinal(d)
+                        | DaySpec::LastOnOrBefore(_, d)
+                        | DaySpec::FirstOnOrAfter(_, d) => d.clamp(1, length),
+                        DaySpec::Last(_) => 1,
+                    },
+                )
+            }
         }
     }
 
@@ -2073,6 +2097,98 @@ mod tests {
             DaySpec::FirstOnOrAfter(Weekday::Sunday, 29),
         )
         .to_timestamp(0, 0);
+    }
+
+    #[test]
+    fn day_spec_checked_rejection_and_valid_fallback_dates() {
+        // Common year 2025 Feb Sat>=29: checked path rejects, infallible fallback normalizes to Mar 1.
+        let feb_sat_29 = DaySpec::FirstOnOrAfter(Weekday::Saturday, 29);
+        assert!(feb_sat_29
+            .try_to_concrete_day(2025, Month::February)
+            .is_err());
+        assert_eq!(
+            feb_sat_29.to_concrete_day(2025, Month::February),
+            (Month::March, 1)
+        );
+
+        // Common year 2025 Feb Sun>=29 and Apr Sun>=31 normalize cleanly across month boundary.
+        let feb_sun_29 = DaySpec::FirstOnOrAfter(Weekday::Sunday, 29);
+        assert!(feb_sun_29
+            .try_to_concrete_day(2025, Month::February)
+            .is_err());
+        assert_eq!(
+            feb_sun_29.to_concrete_day(2025, Month::February),
+            (Month::March, 2)
+        );
+
+        let apr_sun_31 = DaySpec::FirstOnOrAfter(Weekday::Sunday, 31);
+        assert!(apr_sun_31.try_to_concrete_day(2024, Month::April).is_err());
+        assert_eq!(
+            apr_sun_31.to_concrete_day(2024, Month::April),
+            (Month::May, 5)
+        );
+
+        // Invalid ordinal and out-of-range anchor fallbacks always produce valid calendar dates.
+        assert_eq!(
+            DaySpec::Ordinal(29).to_concrete_day(2025, Month::February),
+            (Month::February, 28)
+        );
+        assert_eq!(
+            DaySpec::Ordinal(0).to_concrete_day(2025, Month::February),
+            (Month::February, 1)
+        );
+        assert_eq!(
+            DaySpec::Ordinal(127).to_concrete_day(2025, Month::February),
+            (Month::February, 28)
+        );
+
+        let months = [
+            Month::January,
+            Month::February,
+            Month::March,
+            Month::April,
+            Month::May,
+            Month::June,
+            Month::July,
+            Month::August,
+            Month::September,
+            Month::October,
+            Month::November,
+            Month::December,
+        ];
+        for year in [2024_i64, 2025] {
+            let leap = year == 2024;
+            for month in months {
+                let specs = [
+                    DaySpec::Ordinal(0),
+                    DaySpec::Ordinal(1),
+                    DaySpec::Ordinal(28),
+                    DaySpec::Ordinal(29),
+                    DaySpec::Ordinal(30),
+                    DaySpec::Ordinal(31),
+                    DaySpec::Ordinal(32),
+                    DaySpec::Last(Weekday::Saturday),
+                    DaySpec::LastOnOrBefore(Weekday::Saturday, 0),
+                    DaySpec::LastOnOrBefore(Weekday::Saturday, 29),
+                    DaySpec::LastOnOrBefore(Weekday::Saturday, 30),
+                    DaySpec::LastOnOrBefore(Weekday::Saturday, 31),
+                    DaySpec::LastOnOrBefore(Weekday::Saturday, 32),
+                    DaySpec::FirstOnOrAfter(Weekday::Saturday, 0),
+                    DaySpec::FirstOnOrAfter(Weekday::Saturday, 29),
+                    DaySpec::FirstOnOrAfter(Weekday::Saturday, 30),
+                    DaySpec::FirstOnOrAfter(Weekday::Saturday, 31),
+                    DaySpec::FirstOnOrAfter(Weekday::Saturday, 32),
+                ];
+                for spec in specs {
+                    let (resolved_month, resolved_day) = spec.to_concrete_day(year, month);
+                    let max_len = resolved_month.length(leap);
+                    assert!(
+                        (1..=max_len).contains(&resolved_day),
+                        "invalid concrete date ({resolved_month:?}, {resolved_day}) for {year} {month:?} {spec:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
