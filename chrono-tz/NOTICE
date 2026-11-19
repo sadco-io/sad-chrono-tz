@@ -1,0 +1,73 @@
+sad-chrono-tz
+Copyright 2026 Sadco Security Team
+
+This project is a maintained fork of the chrono-tz workspace (`chrono-tz`,
+`chrono-tz-build`, and `parse-zoneinfo`), kept API-compatible with the
+`chrono-tz 0.10.4` release line and carrying IANA tzdb updates and security and
+robustness fixes.
+
+Original chrono-tz, chrono-tz-build, and parse-zoneinfo Crates
+==============================================================
+Copyright (c) 2016-2024 Benjamin Sago & the chronotope maintainers
+Copyright (c) 2016 Djzin (Apache-2.0 license appendix)
+
+The original crates were developed by Benjamin Sago (originally
+`zoneinfo-parse`, forked as `parse-zoneinfo`), Djzin, and the chronotope
+project:
+https://github.com/chronotope/chrono-tz
+
+`sad-chrono-tz` and `sad-chrono-tz-build` are dual-licensed under the MIT
+License and the Apache License, Version 2.0; see LICENSE-MIT and LICENSE-APACHE
+for both license texts. `sad-parse-zoneinfo` is licensed under the MIT License;
+see `parse-zoneinfo/LICENSE-MIT`.
+
+The time zone data files in `chrono-tz/tz/` are sourced from the IANA Time Zone
+Database (https://www.iana.org/time-zones, https://github.com/eggert/tz) and
+are in the public domain.
+
+Modifications
+=============
+This fork includes the following changes relative to `chrono-tz` 0.10.4 /
+`chrono-tz-build` 0.5.0 / `parse-zoneinfo` 0.4.0:
+
+- Non-breaking upstream improvements cherry-picked from `chronotope/chrono-tz`:
+  - `chrono-tz#211` (Robert Bastian): `%z` numeric offset format support in
+    `parse-zoneinfo` (`0.5.0`)
+  - `chrono-tz#214` (Robert Bastian): link deduplication in `chrono-tz-build`
+  - `chrono-tz#218` (Robert Bastian): fix regex filtering (`CHRONO_TZ_TIMEZONE_FILTER`)
+    to stop pulling in unrelated `Etc/GMT*` and `UTC` zones (`chrono-tz#215`)
+  - `chrono-tz#222` (Dirkjan Ochtman): lifetime elision warning cleanups in
+    `parse-zoneinfo`
+  - `chrono-tz#223` (Yotam Ofek): update `phf` / `phf_codegen` / `phf_shared`
+    to `0.13`
+  - `chrono-tz#224` (Yotam Ofek): depend on `serde_core` instead of `serde`
+  - `chrono-tz#225` (Yotam Ofek): bump MSRV to Rust 1.66.0 across all crates
+  - `chrono-tz#226` (Paul Bender): feature-gated `defmt` (`1.0.1`) support
+  - `chrono-tz#227` (Paul Bender): clippy warning fixes in `chrono-tz-build`
+- IANA Time Zone Database updated from `2025b` to `2026f`
+- Security and robustness fixes by the Sadco Security Team:
+  - `sad-parse-zoneinfo`: O(1) checked Gregorian year-to-timestamp calculation
+    replacing the O(|year - 1970|) loop; checked day/weekday/time parsing and
+    calendar math without panics or integer wrap/overflow; graceful handling of
+    `Year::Minimum` / `Year::Maximum`; cycle-safe link resolution and validation
+    for broken links and missing continuation rulesets; safe `%z` formatting for
+    fractional-minute offsets and extreme values; panic-free transition table
+    generation with checked/saturating arithmetic; inline `#` comment `break` fix;
+    and safe handling of `>= 4`-segment zone names in `structure.rs`
+  - `sad-chrono-tz-build`: transitive cycle-safe link resolution, build-time
+    validation of `FixedTimespan` offsets (`i32` and `|offset| < 86_400`),
+    escaped string emission in generated Rust code, and filtered 3-level
+    submodule trees
+  - `sad-chrono-tz`: saturating arithmetic in `FixedTimespanSet::local_span`,
+    bounded untrusted input length in `SerdeError`, and target dependency on
+    `sad-chrono 0.4` (`0.4.46+`)
+- Packaging and governance:
+  - Published as `sad-chrono-tz` (`0.10.5`, library `sad_chrono_tz`),
+    `sad-chrono-tz-build` (`0.5.1`, library `sad_chrono_tz_build`), and
+    `sad-parse-zoneinfo` (`0.5.1`, library `sad_parse_zoneinfo`)
+  - Real `LICENSE-MIT` and `LICENSE-APACHE` files replacing symlinks
+
+The upstream fixes listed above were written by their upstream authors; see
+CHANGELOG.md for attribution of each change. The packaging changes and the
+Sadco Security Team fixes listed above were developed by the Sadco Security Team
+with assistance from AI coding tools (Anthropic Claude, Google Gemini).

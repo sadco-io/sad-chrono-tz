@@ -1,6 +1,6 @@
 use crate::timezones::Tz;
 
-pub const IANA_TZDB_VERSION: &str = "2025b";
+pub const IANA_TZDB_VERSION: &str = "2026f";
 
 pub const CET: Tz = Tz::CET;
 pub const CST6CDT: Tz = Tz::CST6CDT;

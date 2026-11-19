@@ -1,8 +1,8 @@
-extern crate parse_zoneinfo;
-
-use parse_zoneinfo::line::{ChangeTime, DaySpec, Line, Month, TimeSpec, TimeType, Weekday, Year};
-use parse_zoneinfo::table::{Format, RuleInfo, Saving, Table, TableBuilder, ZoneInfo};
-use parse_zoneinfo::transitions::{FixedTimespan, FixedTimespanSet, TableTransitions};
+use sad_parse_zoneinfo::line::{
+    ChangeTime, DaySpec, Line, Month, TimeSpec, TimeType, Weekday, Year,
+};
+use sad_parse_zoneinfo::table::{Format, RuleInfo, Saving, Table, TableBuilder, ZoneInfo};
+use sad_parse_zoneinfo::transitions::{FixedTimespan, FixedTimespanSet, TableTransitions};
 
 #[test]
 fn no_transitions() {

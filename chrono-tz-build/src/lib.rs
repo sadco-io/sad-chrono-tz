@@ -96,9 +96,9 @@ fn write_timezone_file(
         timezone_file,
         "/// TimeZones built at compile time from the tz database
 ///
-/// This implements [`chrono::TimeZone`] so that it may be used in and to
-/// construct chrono's DateTime type. See the root module documentation
-/// for details."
+/// This implements [`TimeZone`](https://docs.rs/sad-chrono/0.4/sad_chrono/offset/trait.TimeZone.html)
+/// so that it may be used in and to construct sad-chrono's `DateTime` type.
+/// See the root module documentation for details."
     )?;
     writeln!(timezone_file, "#[derive(Clone, Copy, PartialEq, Eq, Hash)]")?;
     writeln!(
@@ -212,6 +212,17 @@ impl FromStr for Tz {{
     }}
 }}\n"
     )?;
+    if zones.contains("UTC") {
+        writeln!(
+            timezone_file,
+            "/// Returns [`Tz::UTC`].
+impl Default for Tz {{
+    fn default() -> Self {{
+        Tz::UTC
+    }}
+}}\n"
+        )?;
+    }
     writeln!(
         timezone_file,
         r#"#[cfg(feature = "defmt")]
@@ -281,7 +292,7 @@ impl defmt::Format for Tz {{
 /// Useful for iterating over known timezones:
 ///
 /// ```
-/// use chrono_tz::{{TZ_VARIANTS, Tz}};
+/// use sad_chrono_tz::{{TZ_VARIANTS, Tz}};
 /// assert!(TZ_VARIANTS.iter().any(|v| *v == Tz::UTC));
 /// ```
 pub static TZ_VARIANTS: [Tz; {num}] = [

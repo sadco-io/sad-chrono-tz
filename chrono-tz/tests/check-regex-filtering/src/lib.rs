@@ -11,8 +11,8 @@
 
 #[cfg(test)]
 mod tests {
-    use chrono::offset::TimeZone;
-    use chrono_tz::{Europe, Tz, TZ_VARIANTS};
+    use sad_chrono::offset::TimeZone;
+    use sad_chrono_tz::{Europe, Tz, TZ_VARIANTS};
     use std::str::FromStr;
 
     #[test]

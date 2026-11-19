@@ -17,8 +17,8 @@
 //! ## Example
 //!
 //! ```
-//! use parse_zoneinfo::line::{Zone, Line, Link};
-//! use parse_zoneinfo::table::TableBuilder;
+//! use sad_parse_zoneinfo::line::{Zone, Line, Link};
+//! use sad_parse_zoneinfo::table::TableBuilder;
 //!
 //! let mut builder = TableBuilder::new();
 //!
@@ -34,7 +34,7 @@
 //! assert!(table.get_zoneset("Pacific/Auckland").is_some());
 //! assert!(table.get_zoneset("Antarctica/McMurdo").is_some());
 //! assert!(table.get_zoneset("UTC").is_none());
-//! # Ok::<(), parse_zoneinfo::line::Error>(())
+//! # Ok::<(), sad_parse_zoneinfo::line::Error>(())
 //! ```
 
 use std::collections::hash_map::{Entry, HashMap};

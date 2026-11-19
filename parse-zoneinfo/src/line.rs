@@ -14,7 +14,7 @@
 //! Parsing a `Rule` line:
 //!
 //! ```
-//! use parse_zoneinfo::line::*;
+//! use sad_parse_zoneinfo::line::*;
 //!
 //! let line = Line::new("Rule  EU  1977    1980    -   Apr Sun>=1   1:00u  1:00    S");
 //!
@@ -33,7 +33,7 @@
 //! Parsing a `Zone` line:
 //!
 //! ```
-//! use parse_zoneinfo::line::*;
+//! use sad_parse_zoneinfo::line::*;
 //!
 //! let line = Line::new("Zone  Australia/Adelaide  9:30  Aus  AC%sT  1971 Oct 31  2:00:00");
 //!
@@ -56,7 +56,7 @@
 //! Parsing a `Link` line:
 //!
 //! ```
-//! use parse_zoneinfo::line::*;
+//! use sad_parse_zoneinfo::line::*;
 //!
 //! let line = Line::new("Link  Europe/Istanbul  Asia/Istanbul");
 //! assert_eq!(line, Ok(Line::Link(Link {

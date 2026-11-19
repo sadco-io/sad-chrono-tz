@@ -2,8 +2,8 @@ use std::error::Error;
 
 use insta::assert_debug_snapshot;
 
-use parse_zoneinfo::line::Line;
-use parse_zoneinfo::FILES;
+use sad_parse_zoneinfo::line::Line;
+use sad_parse_zoneinfo::FILES;
 
 #[ignore]
 #[test]

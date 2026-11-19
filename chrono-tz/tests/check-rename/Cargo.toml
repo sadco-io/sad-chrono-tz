@@ -1,0 +1,14 @@
+[package]
+name = "check-rename"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+chrono = { package = "sad-chrono", version = "0.4.46" }
+chrono-tz = { package = "sad-chrono-tz", path = "../..", features = ["serde", "case-insensitive"] }
+
+[dev-dependencies]
+serde_test = "1"
+
+[workspace]

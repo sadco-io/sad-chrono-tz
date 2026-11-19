@@ -1,20 +1,13 @@
 use core::cmp::Ordering;
 use core::fmt::{Debug, Display, Error, Formatter, Write};
 
-use chrono::{
+use sad_chrono::{
     DateTime, Duration, FixedOffset, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset,
     TimeZone,
 };
 
 use crate::binary_search::binary_search;
 use crate::timezones::Tz;
-
-/// Returns [`Tz::UTC`].
-impl Default for Tz {
-    fn default() -> Self {
-        Tz::UTC
-    }
-}
 
 /// An Offset that applies for a period of time
 ///
@@ -92,14 +85,11 @@ pub struct TzOffset {
 /// in effect (such as DST) at a given time.
 ///
 /// ```
-/// # extern crate chrono;
-/// # extern crate chrono_tz;
-/// use chrono::{Duration, Offset, TimeZone};
-/// use chrono_tz::Europe::London;
-/// use chrono_tz::OffsetComponents;
+/// use sad_chrono::{Duration, Offset, TimeZone};
+/// use sad_chrono_tz::Europe::London;
+/// use sad_chrono_tz::OffsetComponents;
 ///
-/// # fn main() {
-/// let london_time = London.ymd(2016, 5, 10).and_hms(12, 0, 0);
+/// let london_time = London.with_ymd_and_hms(2016, 5, 10, 12, 0, 0).unwrap();
 ///
 /// // London typically has zero offset from UTC, but has a 1h adjustment forward
 /// // when summer time is in effect.
@@ -112,7 +102,6 @@ pub struct TzOffset {
 /// // As a sanity check, make sure that the total offsets added together are equivalent to the
 /// // total fixed offset.
 /// assert_eq!(total_offset.num_seconds(), london_time.offset().fix().local_minus_utc() as i64);
-/// # }
 /// ```
 pub trait OffsetComponents {
     /// The base offset from UTC; this usually doesn't change unless the government changes something
@@ -127,24 +116,20 @@ pub trait OffsetComponents {
 /// various situations.
 ///
 /// ```
-/// # extern crate chrono;
-/// # extern crate chrono_tz;
-/// use chrono::{Duration, Offset, TimeZone};
-/// use chrono_tz::Europe::London;
-/// use chrono_tz::OffsetName;
+/// use sad_chrono::TimeZone;
+/// use sad_chrono_tz::Europe::London;
+/// use sad_chrono_tz::OffsetName;
 ///
-/// # fn main() {
-/// let london_time = London.ymd(2016, 2, 10).and_hms(12, 0, 0);
+/// let london_time = London.with_ymd_and_hms(2016, 2, 10, 12, 0, 0).unwrap();
 /// assert_eq!(london_time.offset().tz_id(), "Europe/London");
 /// // London is normally on GMT
 /// assert_eq!(london_time.offset().abbreviation(), Some("GMT"));
 ///
-/// let london_summer_time = London.ymd(2016, 5, 10).and_hms(12, 0, 0);
+/// let london_summer_time = London.with_ymd_and_hms(2016, 5, 10, 12, 0, 0).unwrap();
 /// // The TZ ID remains constant year round
 /// assert_eq!(london_summer_time.offset().tz_id(), "Europe/London");
 /// // During the summer, this becomes British Summer Time
 /// assert_eq!(london_summer_time.offset().abbreviation(), Some("BST"));
-/// # }
 /// ```
 pub trait OffsetName {
     /// The IANA TZDB identifier (ex: America/New_York)
@@ -363,7 +348,7 @@ impl TimeZone for Tz {
         // technically correct and returning Ambiguous(_,_) on days when the clock changes. The
         // alternative is painful errors when computing unambiguous times such as
         // `TimeZone.ymd(ambiguous_date).hms(unambiguous_time)`.
-        use chrono::LocalResult::*;
+        use sad_chrono::LocalResult::*;
         match (earliest, latest) {
             (result @ Single(_), _) => result,
             (_, result @ Single(_)) => result,
