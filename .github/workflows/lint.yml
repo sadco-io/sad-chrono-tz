@@ -186,8 +186,8 @@ jobs:
           test -z "$(find target/package -type l)"
           rm -rf /tmp/pkg-verify
           mkdir -p /tmp/pkg-verify
-          tar xzf target/package/sad-chrono-tz-*.crate -C /tmp/pkg-verify
-          cargo check --manifest-path /tmp/pkg-verify/sad-chrono-tz-*/Cargo.toml \
+          tar xzf target/package/sad-chrono-tz-[0-9]*.crate -C /tmp/pkg-verify
+          cargo check --manifest-path /tmp/pkg-verify/sad-chrono-tz-[0-9]*/Cargo.toml \
             --all-features --offline \
             --config "source.vendored-sources.directory = '$PWD/vendor'" \
             --config "source.crates-io.replace-with = 'vendored-sources'"
