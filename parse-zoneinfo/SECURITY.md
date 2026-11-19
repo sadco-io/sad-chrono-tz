@@ -2,26 +2,28 @@
 
 ## Supported Versions
 
-| Version | Supported | Notes |
-|---------|-----------|-------|
-| `0.10.x` (`sad-chrono-tz` >= `0.10.5`, `sad-chrono-tz-build` >= `0.5.1`, `sad-parse-zoneinfo` >= `0.5.1`) | All fixes | Current drop-in release line targeting `sad-chrono` `0.4` (MSRV `1.66.0`), API-compatible with `chrono-tz` `0.10.4` with IANA tzdb `2026f` and parser/codegen/runtime hardening. |
-| `< 0.10.5` | No | Upgrade to `0.10.5` or later. |
+| Crate | Supported Versions | Unsupported Versions | Notes |
+|---|---|---|---|
+| `sad-chrono-tz` | `>= 0.10.5` (`0.10.x`) | `< 0.10.5` | Targets `sad-chrono` `0.4` (`0.4.48+`), MSRV `1.66.0` (`defmt` feature requires Rust `1.81+`), API-compatible for the verified runtime surface of `chrono-tz` `0.10.4` with IANA tzdb `2026f`. |
+| `sad-chrono-tz-build` | `>= 0.5.1` (`0.5.x`) | `< 0.5.1` | Build-time codegen for `sad-chrono-tz 0.10.x` (MSRV `1.66.0`). |
+| `sad-parse-zoneinfo` | `>= 0.5.1` (`0.5.x`) | `< 0.5.1` | Textual zoneinfo parser and bounded transition builder (MSRV `1.66.0`). |
 
-## Scope
+## Scope and Exposure Boundaries
 
-This policy covers all three crates in the workspace:
+This policy covers all three crates in the workspace, with distinct threat models:
 
-- **`sad-chrono-tz`**: `Tz::from_str` / `Tz::from_str_insensitive`, `serde::Deserialize`,
-  `TimeZone` / `Offset` / `GapInfo` lookups, and generated timezone tables.
-- **`sad-chrono-tz-build`**: build-time IANA tzdb parsing, `CHRONO_TZ_TIMEZONE_FILTER`
-  regex filtering, link resolution, and generated code invariants.
-- **`sad-parse-zoneinfo`**: parsing untrusted IANA zoneinfo text lines, building
-  zone/rule/link tables, formatting `%z` abbreviations, and computing transition
-  tables.
+- **`sad-chrono-tz`** (runtime): Callers may supply untrusted timezone strings (`FromStr`,
+  `Tz::from_str_insensitive`, `serde::Deserialize`) or dates/timestamps (`TimeZone`, `Offset`, and
+  `GapInfo` lookups against precompiled or regex-filtered tables).
+- **`sad-chrono-tz-build`** (build-time): Exposure requires control over the
+  `CHRONO_TZ_TIMEZONE_FILTER` environment variable or custom/replaced `tz/` zoneinfo inputs; invalid
+  inputs fail code generation cleanly without writing partial output.
+- **`sad-parse-zoneinfo`** (parser): Direct callers may pass untrusted zoneinfo text (`Line::new`,
+  `TableBuilder`) and compute transition tables (`Table::try_timespans`,
+  `TableTransitions::timespans`).
 
-Panics, integer overflows, unbounded CPU or memory resource use, or incorrect
-timezone lookups reachable from untrusted input (or in fallible APIs returning
-`Option` / `Result`) are in scope.
+Panics, integer overflows, unbounded CPU or memory resource use, or incorrect timezone lookups
+reachable from untrusted input (or in fallible APIs returning `Option` / `Result`) are in scope.
 
 ## Advisories
 

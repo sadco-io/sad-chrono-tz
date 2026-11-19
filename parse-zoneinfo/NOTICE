@@ -2,9 +2,9 @@ sad-chrono-tz
 Copyright 2026 Sadco Security Team
 
 This project is a maintained fork of the chrono-tz workspace (`chrono-tz`,
-`chrono-tz-build`, and `parse-zoneinfo`), kept API-compatible with the
-`chrono-tz 0.10.4` release line and carrying IANA tzdb updates and security and
-robustness fixes.
+`chrono-tz-build`, and `parse-zoneinfo`), API-compatible for the verified
+runtime surface of the `chrono-tz 0.10.4` release line and carrying IANA tzdb
+updates and security and robustness fixes.
 
 Original chrono-tz, chrono-tz-build, and parse-zoneinfo Crates
 ==============================================================
@@ -17,9 +17,9 @@ project:
 https://github.com/chronotope/chrono-tz
 
 `sad-chrono-tz` and `sad-chrono-tz-build` are dual-licensed under the MIT
-License and the Apache License, Version 2.0; see LICENSE-MIT and LICENSE-APACHE
-for both license texts. `sad-parse-zoneinfo` is licensed under the MIT License;
-see `parse-zoneinfo/LICENSE-MIT`.
+License and the Apache License, Version 2.0; see `LICENSE-MIT` and
+`LICENSE-APACHE` in each package for both license texts. `sad-parse-zoneinfo`
+is licensed under the MIT License; see `LICENSE-MIT` in its package.
 
 The time zone data files in `chrono-tz/tz/` are sourced from the IANA Time Zone
 Database (https://www.iana.org/time-zones, https://github.com/eggert/tz) and
@@ -30,12 +30,14 @@ Modifications
 This fork includes the following changes relative to `chrono-tz` 0.10.4 /
 `chrono-tz-build` 0.5.0 / `parse-zoneinfo` 0.4.0:
 
-- Non-breaking upstream improvements cherry-picked from `chronotope/chrono-tz`:
+- Upstream improvements cherry-picked from `chronotope/chrono-tz`:
   - `chrono-tz#211` (Robert Bastian): `%z` numeric offset format support in
-    `parse-zoneinfo` (`0.5.0`)
+    `parse-zoneinfo`, adapted to preserve `%z` provenance (`None` in
+    `OffsetName::abbreviation()`) for `chrono-tz 0.10.4` runtime parity
   - `chrono-tz#214` (Robert Bastian): link deduplication in `chrono-tz-build`
-  - `chrono-tz#218` (Robert Bastian): fix regex filtering (`CHRONO_TZ_TIMEZONE_FILTER`)
-    to stop pulling in unrelated `Etc/GMT*` and `UTC` zones (`chrono-tz#215`)
+  - `chrono-tz#218` (Robert Bastian): exact `CHRONO_TZ_TIMEZONE_FILTER` regex
+    filtering (`chrono-tz#215`), with conditional `Default for Tz` when `UTC` is
+    included and empty-match rejection at build time
   - `chrono-tz#222` (Dirkjan Ochtman): lifetime elision warning cleanups in
     `parse-zoneinfo`
   - `chrono-tz#223` (Yotam Ofek): update `phf` / `phf_codegen` / `phf_shared`
@@ -43,24 +45,37 @@ This fork includes the following changes relative to `chrono-tz` 0.10.4 /
   - `chrono-tz#224` (Yotam Ofek): depend on `serde_core` instead of `serde`
   - `chrono-tz#225` (Yotam Ofek): bump MSRV to Rust 1.66.0 across all crates
   - `chrono-tz#226` (Paul Bender): feature-gated `defmt` (`1.0.1`) support
+    (requires Rust `1.81+`)
   - `chrono-tz#227` (Paul Bender): clippy warning fixes in `chrono-tz-build`
 - IANA Time Zone Database updated from `2025b` to `2026f`
 - Security and robustness fixes by the Sadco Security Team:
-  - `sad-parse-zoneinfo`: O(1) checked Gregorian year-to-timestamp calculation
-    replacing the O(|year - 1970|) loop; checked day/weekday/time parsing and
-    calendar math without panics or integer wrap/overflow; graceful handling of
-    `Year::Minimum` / `Year::Maximum`; cycle-safe link resolution and validation
-    for broken links and missing continuation rulesets; safe `%z` formatting for
-    fractional-minute offsets and extreme values; panic-free transition table
-    generation with checked/saturating arithmetic; inline `#` comment `break` fix;
+  - `sad-parse-zoneinfo`: constant-time `i128` Gregorian year-to-timestamp
+    calculation clamping `ChangeTime::to_timestamp()` once to `i64`; single-clamp
+    `i128` arithmetic in `RuleInfo::absolute_datetime`; `1..=31` day token
+    validation plus month/leap-year ordinal date validation in
+    `try_to_concrete_day`, parsing, and transitions while preserving weekday
+    spillover; `i16`/`i128` calendar boundary math; `FailedYearParse` on
+    symbolic `Zone` `UNTIL` years and non-panicking handling in `RuleInfo` /
+    `ChangeTime`; `TimeSpec` validation allowing leading `+`/`-` on hours and
+    rejecting mixed signs or mins/secs `>= 60`; cycle-safe `Table::get_zoneset`
+    returning `None` on broken/cyclic links and zone/link collision rejection in
+    `TableBuilder`; safe `%z` formatting, bounded `Format::try_format`, and
+    fallible `Format::try_format_constant`; bounded `Table::try_timespans` /
+    `try_codegen_timespans` (`4_096` rules/ruleset, `256` active/year, `10_000`
+    transitions/zone, `64`-byte names), terminal/monotonic `UNTIL` validation,
+    and `O(R)` per-year rule precomputation; inline `#` comment `break` fix;
     and safe handling of `>= 4`-segment zone names in `structure.rs`
-  - `sad-chrono-tz-build`: transitive cycle-safe link resolution, build-time
-    validation of `FixedTimespan` offsets (`i32` and `|offset| < 86_400`),
-    escaped string emission in generated Rust code, and filtered 3-level
-    submodule trees
-  - `sad-chrono-tz`: saturating arithmetic in `FixedTimespanSet::local_span`,
-    bounded untrusted input length in `SerdeError`, and target dependency on
-    `sad-chrono 0.4` (`0.4.46+`)
+  - `sad-chrono-tz-build`: Rust identifier grammar validation, normalization/
+    case/zone-link collision detection, broken/cyclic link and depth `<= 3`
+    rejection, empty-selection rejection, `%z` provenance preservation, `i32`
+    and `|offset| < 86_400` validation, `{:?}` string-literal escaping,
+    `MAX_TZ_NAME_LEN` pre-checks before PHF lookups, and in-memory codegen
+    prior to writing output files
+  - `sad-chrono-tz`: single-clamp `i128` arithmetic in
+    `FixedTimespanSet::local_span`, `MAX_TZ_NAME_LEN` pre-check in
+    `FromStr`/`from_str_insensitive`, `escape_debug()` + `128`-byte UTF-8-safe
+    reflected diagnostic budget in `SerdeError`, and dependency on
+    `sad-chrono 0.4` (`0.4.48+`)
 - Packaging and governance:
   - Published as `sad-chrono-tz` (`0.10.5`, library `sad_chrono_tz`),
     `sad-chrono-tz-build` (`0.5.1`, library `sad_chrono_tz_build`), and
@@ -68,6 +83,6 @@ This fork includes the following changes relative to `chrono-tz` 0.10.4 /
   - Real `LICENSE-MIT` and `LICENSE-APACHE` files replacing symlinks
 
 The upstream fixes listed above were written by their upstream authors; see
-CHANGELOG.md for attribution of each change. The packaging changes and the
+`CHANGELOG.md` for attribution of each change. The packaging changes and the
 Sadco Security Team fixes listed above were developed by the Sadco Security Team
 with assistance from AI coding tools (Anthropic Claude, Google Gemini).
