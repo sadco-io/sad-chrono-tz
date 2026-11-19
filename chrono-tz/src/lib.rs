@@ -6,7 +6,7 @@
 //! and [`sad-parse-zoneinfo`][zoneinfo_parse].
 //!
 //! [chrono]: https://github.com/sadco-io/sad-chrono
-//! [timezone]: https://docs.rs/sad-chrono/0.4/sad_chrono/offset/trait.TimeZone.html
+//! [timezone]: https://docs.rs/sad-chrono/0.5/sad_chrono/offset/trait.TimeZone.html
 //! [iana]: https://www.iana.org/time-zones
 //! [zoneinfo_parse]: https://docs.rs/sad-parse-zoneinfo
 //!
@@ -774,6 +774,14 @@ mod tests {
         assert_defmt::<ParseError>();
         assert_defmt::<TzOffset>();
         assert_defmt::<FixedTimespan>();
+    }
+
+    #[test]
+    fn parse_error_implements_core_error() {
+        fn assert_error<T: core::error::Error>() {}
+        assert_error::<super::ParseError>();
+        let err: super::ParseError = "No/Such/Zone".parse::<Tz>().unwrap_err();
+        assert_eq!(err.to_string(), "failed to parse timezone");
     }
 
     #[test]

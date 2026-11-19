@@ -186,7 +186,7 @@ fn convert_bad_chars(name: &str) -> String {
             '/' => out.push_str("__"),
             '+' => out.push_str("Plus"),
             '-' => {
-                if chars.peek().copied().map_or(false, char::is_numeric) {
+                if chars.peek().copied().is_some_and(char::is_numeric) {
                     out.push_str("Minus");
                 }
             }
@@ -401,7 +401,7 @@ fn render_timezone_file(
         out,
         "/// TimeZones built at compile time from the tz database
 ///
-/// This implements [`TimeZone`](https://docs.rs/sad-chrono/0.4/sad_chrono/offset/trait.TimeZone.html)
+/// This implements [`TimeZone`](https://docs.rs/sad-chrono/0.5/sad_chrono/offset/trait.TimeZone.html)
 /// so that it may be used in and to construct sad-chrono's `DateTime` type.
 /// [`Default`] is implemented for [`Tz`] when `UTC` is included in the compiled zone set.
 /// See the root module documentation for details."
@@ -465,8 +465,7 @@ impl Display for ParseError {{
     }}
 }}
 
-#[cfg(feature = "std")]
-impl std::error::Error for ParseError {{}}
+impl core::error::Error for ParseError {{}}
 
 impl FromStr for Tz {{
     type Err = ParseError;
@@ -841,7 +840,7 @@ fn try_main_from_root(root: &Path, dir: &Path, filter: bool, uncased: bool) -> R
     let _ = filter;
 
     #[cfg(feature = "filter-by-regex")]
-    let matches_filter = |tz: &str| regex.as_ref().map_or(true, |r| r.is_match(tz));
+    let matches_filter = |tz: &str| regex.as_ref().is_none_or(|r| r.is_match(tz));
     #[cfg(not(feature = "filter-by-regex"))]
     let matches_filter = |_: &str| true;
 

@@ -1,8 +1,8 @@
 [package]
 name = "sad-chrono-tz-build"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
-rust-version = "1.66.0"
+rust-version = "1.85.0"
 authors = ["Sadco Security Team", "The chrono-tz contributors"]
 description = "Internal build script for sad-chrono-tz"
 homepage = "https://github.com/sadco-io/sad-chrono-tz"
@@ -27,10 +27,10 @@ case-insensitive = ["uncased", "phf_shared/uncased"]
 regex = ["dep:regex"]
 
 [dependencies]
-parse-zoneinfo = { package = "sad-parse-zoneinfo", path = "../parse-zoneinfo", version = "0.5.1" }
+parse-zoneinfo = { package = "sad-parse-zoneinfo", path = "../parse-zoneinfo", version = "0.6.0" }
 regex = { default-features = false, version = "1", optional = true }
-phf_codegen = { version = "0.13", default-features = false }
+phf_codegen = { version = "0.14", default-features = false }
 uncased = { version = "0.9", optional = true, default-features = false }
 
 # needed only to forward feature for uncased
-phf_shared = { version = "0.13", default-features = false, optional = true }
+phf_shared = { version = "0.14", default-features = false, optional = true }
