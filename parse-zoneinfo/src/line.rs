@@ -1744,17 +1744,21 @@ mod tests {
             dec_after.to_concrete_day(2026, Month::December),
             (Month::January, 3)
         );
-        let ts_2027_jan_3 = ChangeTime::UntilDay(Year::Number(2027), Month::January, DaySpec::Ordinal(3))
-            .to_timestamp(0, 0);
+        let ts_2027_jan_3 =
+            ChangeTime::UntilDay(Year::Number(2027), Month::January, DaySpec::Ordinal(3))
+                .to_timestamp(0, 0);
         assert_eq!(
             ChangeTime::UntilDay(Year::Number(2026), Month::December, dec_after).to_timestamp(0, 0),
             ts_2027_jan_3
         );
 
         // Programmatically constructed extreme days do not panic.
-        let _ = DaySpec::FirstOnOrAfter(Weekday::Sunday, 127).to_concrete_day(i64::MAX, Month::December);
-        let _ = DaySpec::LastOnOrBefore(Weekday::Sunday, 127).to_concrete_day(i64::MIN, Month::January);
-        let _ = DaySpec::LastOnOrBefore(Weekday::Sunday, i8::MIN).to_concrete_day(0, Month::January);
+        let _ = DaySpec::FirstOnOrAfter(Weekday::Sunday, 127)
+            .to_concrete_day(i64::MAX, Month::December);
+        let _ =
+            DaySpec::LastOnOrBefore(Weekday::Sunday, 127).to_concrete_day(i64::MIN, Month::January);
+        let _ =
+            DaySpec::LastOnOrBefore(Weekday::Sunday, i8::MIN).to_concrete_day(0, Month::January);
     }
 
     #[test]
@@ -1775,7 +1779,16 @@ mod tests {
 
     #[test]
     fn time_spec_rejects_malformed_signs_and_ranges() {
-        for bad in ["-1:-9", "-0:+1", "--1:00", "0:60", "0:00:60", "0:99:99", "+1:00", "1:00:00:00"] {
+        for bad in [
+            "-1:-9",
+            "-0:+1",
+            "--1:00",
+            "0:60",
+            "0:00:60",
+            "0:99:99",
+            "+1:00",
+            "1:00:00:00",
+        ] {
             assert!(
                 TimeSpec::from_str(bad).is_err(),
                 "expected TimeSpec error for {bad:?}"

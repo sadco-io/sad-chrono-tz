@@ -663,7 +663,10 @@ mod tests {
                 assert!(off.abbreviation().is_some());
                 let fixed = off.fix();
                 let components_total = off.base_utc_offset() + off.dst_offset();
-                assert_eq!(components_total.num_seconds(), fixed.local_minus_utc() as i64);
+                assert_eq!(
+                    components_total.num_seconds(),
+                    fixed.local_minus_utc() as i64
+                );
                 let _ = format!("{off} {off:?}");
             }
         }
@@ -686,8 +689,8 @@ mod tests {
     #[cfg(feature = "arbitrary")]
     #[test]
     fn arbitrary_generates_valid_tz() {
-        use arbitrary::{Arbitrary, Unstructured};
         use super::TZ_VARIANTS;
+        use arbitrary::{Arbitrary, Unstructured};
 
         for seed in 0u8..=16 {
             let bytes = [seed, seed.wrapping_mul(37), 0x5a, 0xa5];

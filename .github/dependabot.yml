@@ -1,0 +1,12 @@
+# Cargo version updates are disabled on purpose: sad-chrono-tz is a drop-in
+# replacement for chrono-tz 0.10.4, and bumping the requirement of a public
+# dependency can change the public API, wire formats, or MSRV. Dependency
+# updates are reviewed manually; Dependabot security alerts stay enabled.
+# Workflow actions are SHA-pinned; Dependabot bumps both the commit SHAs and `# vX` comments.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "main"
