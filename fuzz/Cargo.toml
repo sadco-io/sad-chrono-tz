@@ -1,0 +1,40 @@
+[package]
+name = "sad-chrono-tz-fuzz"
+version = "0.0.0"
+authors = ["Sadco Security Team"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.sad-chrono-tz]
+path = "../chrono-tz"
+features = ["serde", "case-insensitive"]
+
+[dependencies.sad-parse-zoneinfo]
+path = "../parse-zoneinfo"
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_parse_line"
+path = "fuzz_targets/fuzz_parse_line.rs"
+
+[[bin]]
+name = "fuzz_parse_table"
+path = "fuzz_targets/fuzz_parse_table.rs"
+
+[[bin]]
+name = "fuzz_tz_from_str"
+path = "fuzz_targets/fuzz_tz_from_str.rs"
+
+[[bin]]
+name = "fuzz_tz_serde"
+path = "fuzz_targets/fuzz_tz_serde.rs"
