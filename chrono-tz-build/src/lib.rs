@@ -2,14 +2,14 @@ extern crate parse_zoneinfo;
 #[cfg(feature = "filter-by-regex")]
 extern crate regex;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use parse_zoneinfo::line::Line;
-use parse_zoneinfo::structure::{Child, Structure};
+use parse_zoneinfo::structure::Child;
 use parse_zoneinfo::table::{Table, TableBuilder};
 use parse_zoneinfo::transitions::FixedTimespan;
 use parse_zoneinfo::transitions::TableTransitions;
@@ -30,19 +30,48 @@ fn strip_comments(mut line: String) -> String {
     line
 }
 
+fn validate_timespan(zone: &str, ts: &FixedTimespan) {
+    assert!(
+        i32::try_from(ts.utc_offset).is_ok(),
+        "zone {zone}: utc_offset {} out of i32 range",
+        ts.utc_offset
+    );
+    assert!(
+        i32::try_from(ts.dst_offset).is_ok(),
+        "zone {zone}: dst_offset {} out of i32 range",
+        ts.dst_offset
+    );
+    let total = ts.utc_offset as i128 + ts.dst_offset as i128;
+    assert!(
+        i32::try_from(total).is_ok() && total.abs() < 86_400,
+        "zone {zone}: total offset {total} out of FixedOffset bounds (-86400..86400)"
+    );
+}
+
+fn resolve_link<'a>(table: &'a Table, zone: &'a str) -> &'a str {
+    let mut current = zone;
+    let mut visited = HashSet::new();
+    while let Some(target) = table.links.get(current) {
+        assert!(
+            visited.insert(current),
+            "cyclic link detected while resolving zone {zone}"
+        );
+        current = target.as_str();
+    }
+    current
+}
+
 // Generate a list of the time zone periods beyond the first that apply
 // to this zone, as a string representation of a static slice.
-fn format_rest(rest: Vec<(i64, FixedTimespan)>) -> String {
+fn format_rest(zone: &str, rest: Vec<(i64, FixedTimespan)>) -> String {
     let mut ret = "&[\n".to_string();
-    for (
-        start,
-        FixedTimespan {
+    for (start, ts) in rest {
+        validate_timespan(zone, &ts);
+        let FixedTimespan {
             utc_offset,
             dst_offset,
             name,
-        },
-    ) in rest
-    {
+        } = ts;
         ret.push_str(&format!(
             "                ({start}, FixedTimespan {{ \
              utc_offset: {utc_offset}, dst_offset: {dst_offset}, name: Some({name:?}) \
@@ -53,25 +82,25 @@ fn format_rest(rest: Vec<(i64, FixedTimespan)>) -> String {
     ret
 }
 
-// Convert all '/' to '__', all '+' to 'Plus' and '-' to 'Minus', unless
-// it's a hyphen, in which case remove it. This is so the names can be used
-// as rust identifiers.
+// Convert all '/' to '__', all '+' to 'Plus' and '-' followed by a digit to
+// 'Minus', removing other '-' hyphens. This is so the names can be used as
+// Rust identifiers.
 fn convert_bad_chars(name: &str) -> String {
-    let name = name.replace('/', "__").replace('+', "Plus");
-    if let Some(pos) = name.find('-') {
-        if name[pos + 1..]
-            .chars()
-            .next()
-            .map(char::is_numeric)
-            .unwrap_or(false)
-        {
-            name.replace('-', "Minus")
-        } else {
-            name.replace('-', "")
+    let mut out = String::with_capacity(name.len());
+    let mut chars = name.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '/' => out.push_str("__"),
+            '+' => out.push_str("Plus"),
+            '-' => {
+                if chars.peek().copied().map_or(false, char::is_numeric) {
+                    out.push_str("Minus");
+                }
+            }
+            _ => out.push(ch),
         }
-    } else {
-        name
     }
+    out
 }
 
 // The timezone file contains impls of `Timespans` for all timezones in the
@@ -174,7 +203,7 @@ impl FromStr for Tz {{
     )?;
     for &zone in zones {
         let zone_name = convert_bad_chars(zone);
-        writeln!(timezone_file, "            Tz::{zone_name} => \"{zone}\",")?;
+        writeln!(timezone_file, "            Tz::{zone_name} => {zone:?},")?;
     }
     writeln!(
         timezone_file,
@@ -240,11 +269,13 @@ impl defmt::Format for Tz {{
     )?;
     for zone in zones
         .iter()
-        .map(|&z| table.links.get(z).map(String::as_str).unwrap_or(z))
+        .map(|&z| resolve_link(table, z))
         .collect::<BTreeSet<_>>()
     {
         let zone_name = convert_bad_chars(zone);
         let timespans = table.timespans(zone).unwrap();
+        validate_timespan(zone, &timespans.first);
+        let rest = format_rest(zone, timespans.rest);
         writeln!(
             timezone_file,
             "        const {zone}: FixedTimespanSet = FixedTimespanSet {{
@@ -252,7 +283,7 @@ impl defmt::Format for Tz {{
             rest: {rest},
         }};\n",
             zone = zone_name.to_uppercase(),
-            rest = format_rest(timespans.rest),
+            rest = rest,
             utc = timespans.first.utc_offset,
             dst = timespans.first.dst_offset,
             name = timespans.first.name,
@@ -268,11 +299,7 @@ impl defmt::Format for Tz {{
 
     for &zone in zones {
         let zone_name = convert_bad_chars(zone);
-        let target_name = if let Some(target) = table.links.get(zone) {
-            convert_bad_chars(target)
-        } else {
-            zone_name.clone()
-        };
+        let target_name = convert_bad_chars(resolve_link(table, zone));
         writeln!(
             timezone_file,
             "            Tz::{zone_name} => {target_name},",
@@ -314,7 +341,6 @@ pub static TZ_VARIANTS: [Tz; {num}] = [
 // instead of having to use chrono_tz::timezones::Europe__London
 fn write_directory_file(
     directory_file: &mut File,
-    table: &Table,
     zones: &BTreeSet<&str>,
     version: &str,
 ) -> io::Result<()> {
@@ -323,7 +349,7 @@ fn write_directory_file(
     // expose the underlying IANA TZDB version
     writeln!(
         directory_file,
-        "pub const IANA_TZDB_VERSION: &str = \"{version}\";\n"
+        "pub const IANA_TZDB_VERSION: &str = {version:?};\n"
     )?;
 
     // add the `loose' zone definitions first
@@ -365,7 +391,7 @@ fn write_directory_file(
             writeln!(directory_file, "    pub mod {submodule_name} {{")?;
             writeln!(directory_file, "        use crate::timezones::Tz;\n",)?;
             let full_name = entry.name.to_string() + "/" + name;
-            for entry in table.structure() {
+            for entry in parse_zoneinfo::structure::build_tree(zones.iter().copied()) {
                 if entry.name != full_name {
                     continue;
                 }
@@ -476,5 +502,103 @@ pub fn main(dir: &Path, _filter: bool, uncased: bool) {
     let directory_path = dir.join("directory.rs");
     let mut directory_file = File::create(directory_path).unwrap();
     let version = detect_iana_db_version();
-    write_directory_file(&mut directory_file, &table, &zones, &version).unwrap();
+    write_directory_file(&mut directory_file, &zones, &version).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parse_zoneinfo::line::Line;
+
+    #[test]
+    fn convert_bad_chars_handles_mixed_hyphens_and_digits() {
+        assert_eq!(convert_bad_chars("Etc/GMT-1"), "Etc__GMTMinus1");
+        assert_eq!(convert_bad_chars("Etc/GMT+12"), "Etc__GMTPlus12");
+        assert_eq!(
+            convert_bad_chars("America/Port-au-Prince"),
+            "America__PortauPrince"
+        );
+        assert_eq!(
+            convert_bad_chars("America/Port-au-Prince-1"),
+            "America__PortauPrinceMinus1"
+        );
+    }
+
+    #[test]
+    fn resolve_link_transitive() {
+        let mut builder = TableBuilder::new();
+        builder
+            .add_line(Line::new("Zone Real/Zone 0 - RZ").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Real/Zone Link/One").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Link/One Link/Two").unwrap())
+            .unwrap();
+        let table = builder.build();
+
+        assert_eq!(resolve_link(&table, "Link/Two"), "Real/Zone");
+        assert_eq!(resolve_link(&table, "Real/Zone"), "Real/Zone");
+    }
+
+    #[test]
+    #[should_panic(expected = "cyclic link detected")]
+    fn resolve_link_cycle_panics() {
+        let mut builder = TableBuilder::new();
+        builder
+            .add_line(Line::new("Link Cycle/B Cycle/A").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Cycle/A Cycle/B").unwrap())
+            .unwrap();
+        let table = builder.build();
+        let _ = resolve_link(&table, "Cycle/A");
+    }
+
+    #[test]
+    fn validate_timespan_accepts_valid_bounds() {
+        validate_timespan(
+            "Valid/Zone",
+            &FixedTimespan {
+                utc_offset: 86_399,
+                dst_offset: 0,
+                name: "V".to_owned(),
+            },
+        );
+        validate_timespan(
+            "Valid/Neg",
+            &FixedTimespan {
+                utc_offset: -86_399,
+                dst_offset: 0,
+                name: "N".to_owned(),
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "FixedOffset bounds")]
+    fn validate_timespan_rejects_24h_offset() {
+        validate_timespan(
+            "Bad/Zone",
+            &FixedTimespan {
+                utc_offset: 82_800,
+                dst_offset: 3_600,
+                name: "B".to_owned(),
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "out of i32 range")]
+    fn validate_timespan_rejects_i32_overflow() {
+        validate_timespan(
+            "Huge/Zone",
+            &FixedTimespan {
+                utc_offset: i64::MAX,
+                dst_offset: 0,
+                name: "H".to_owned(),
+            },
+        );
+    }
 }
