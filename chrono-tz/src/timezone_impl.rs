@@ -25,7 +25,7 @@ pub struct FixedTimespan {
 
 impl Offset for FixedTimespan {
     fn fix(&self) -> FixedOffset {
-        FixedOffset::east_opt(self.utc_offset + self.dst_offset).unwrap()
+        FixedOffset::east_opt(self.utc_offset.saturating_add(self.dst_offset)).unwrap()
     }
 }
 
@@ -34,26 +34,20 @@ impl Display for FixedTimespan {
         if let Some(name) = self.name {
             return write!(f, "{name}");
         }
-        let offset = self.utc_offset + self.dst_offset;
-        let (sign, off) = if offset < 0 {
-            ('-', -offset)
-        } else {
-            ('+', offset)
-        };
+        let offset = self.utc_offset as i64 + self.dst_offset as i64;
+        let sign = if offset < 0 { '-' } else { '+' };
+        let off = offset.unsigned_abs();
 
         let minutes = off / 60;
-        let secs = (off % 60) as u8;
-        let mins = (minutes % 60) as u8;
-        let hours = (minutes / 60) as u8;
-
-        assert!(
-            secs == 0,
-            "numeric names are not used if the offset has fractional minutes"
-        );
+        let secs = off % 60;
+        let mins = minutes % 60;
+        let hours = minutes / 60;
 
         f.write_char(sign)?;
         write!(f, "{hours:02}")?;
-        if mins != 0 {
+        if secs != 0 {
+            write!(f, "{mins:02}{secs:02}")?;
+        } else if mins != 0 {
             write!(f, "{mins:02}")?;
         }
         Ok(())
@@ -276,21 +270,27 @@ impl FixedTimespanSet {
                 None
             } else {
                 let span = self.rest[index - 1];
-                Some(span.0 + span.1.utc_offset as i64 + span.1.dst_offset as i64)
+                Some(
+                    span.0
+                        .saturating_add(span.1.utc_offset as i64)
+                        .saturating_add(span.1.dst_offset as i64),
+                )
             },
             end: if index == self.rest.len() {
                 None
             } else if index == 0 {
                 Some(
-                    self.rest[index].0
-                        + self.first.utc_offset as i64
-                        + self.first.dst_offset as i64,
+                    self.rest[index]
+                        .0
+                        .saturating_add(self.first.utc_offset as i64)
+                        .saturating_add(self.first.dst_offset as i64),
                 )
             } else {
                 Some(
-                    self.rest[index].0
-                        + self.rest[index - 1].1.utc_offset as i64
-                        + self.rest[index - 1].1.dst_offset as i64,
+                    self.rest[index]
+                        .0
+                        .saturating_add(self.rest[index - 1].1.utc_offset as i64)
+                        .saturating_add(self.rest[index - 1].1.dst_offset as i64),
                 )
             },
         }
@@ -473,5 +473,43 @@ impl GapInfo {
         };
 
         Some(Self { begin, end })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_span_extreme_no_overflow() {
+        let set = FixedTimespanSet {
+            first: FixedTimespan {
+                utc_offset: -3600,
+                dst_offset: 0,
+                name: Some("MIN"),
+            },
+            rest: &[
+                (
+                    i64::MIN + 10,
+                    FixedTimespan {
+                        utc_offset: -3600,
+                        dst_offset: 0,
+                        name: Some("LOW"),
+                    },
+                ),
+                (
+                    i64::MAX - 10,
+                    FixedTimespan {
+                        utc_offset: 3600,
+                        dst_offset: 3600,
+                        name: Some("HIGH"),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(set.local_span(0).end, Some(i64::MIN));
+        assert_eq!(set.local_span(1).begin, Some(i64::MIN));
+        assert_eq!(set.local_span(1).end, Some(i64::MAX - 3610));
+        assert_eq!(set.local_span(2).begin, Some(i64::MAX));
     }
 }

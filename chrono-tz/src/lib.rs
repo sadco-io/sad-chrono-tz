@@ -624,4 +624,233 @@ mod tests {
             "+08"
         );
     }
+
+    #[test]
+    fn exhaustive_tz_variants_roundtrip_and_traits() {
+        use super::{OffsetComponents, OffsetName, TZ_VARIANTS};
+        use core::str::FromStr;
+        use sad_chrono::Offset;
+
+        assert_eq!(IANA_TZDB_VERSION, "2026f");
+        assert_eq!(TZ_VARIANTS.len(), 597);
+        assert_eq!(Tz::default(), Tz::UTC);
+
+        let probes = [
+            NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 15)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+            NaiveDate::from_ymd_opt(2026, 7, 15)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        ];
+
+        for &tz in TZ_VARIANTS.iter() {
+            let name = tz.name();
+            assert_eq!(Tz::from_str(name), Ok(tz));
+            assert_eq!(format!("{tz}"), name);
+            assert_eq!(format!("{tz:?}"), name);
+
+            for probe in probes {
+                let dt = tz.from_utc_datetime(&probe);
+                let off = dt.offset();
+                assert_eq!(off.tz_id(), name);
+                assert!(off.abbreviation().is_some());
+                let fixed = off.fix();
+                let components_total = off.base_utc_offset() + off.dst_offset();
+                assert_eq!(components_total.num_seconds(), fixed.local_minus_utc() as i64);
+                let _ = format!("{off} {off:?}");
+            }
+        }
+    }
+
+    #[cfg(feature = "case-insensitive")]
+    #[test]
+    fn exhaustive_case_insensitive_lookup() {
+        use super::TZ_VARIANTS;
+
+        for &tz in TZ_VARIANTS.iter() {
+            let lower = tz.name().to_ascii_lowercase();
+            let upper = tz.name().to_ascii_uppercase();
+            assert_eq!(Tz::from_str_insensitive(&lower), Ok(tz));
+            assert_eq!(Tz::from_str_insensitive(&upper), Ok(tz));
+        }
+        assert!(Tz::from_str_insensitive("not/a_zone").is_err());
+    }
+
+    #[cfg(feature = "arbitrary")]
+    #[test]
+    fn arbitrary_generates_valid_tz() {
+        use arbitrary::{Arbitrary, Unstructured};
+        use super::TZ_VARIANTS;
+
+        for seed in 0u8..=16 {
+            let bytes = [seed, seed.wrapping_mul(37), 0x5a, 0xa5];
+            let mut u = Unstructured::new(&bytes);
+            let tz = Tz::arbitrary(&mut u).unwrap();
+            assert!(TZ_VARIANTS.contains(&tz));
+        }
+    }
+
+    #[cfg(feature = "defmt")]
+    #[test]
+    fn defmt_format_impls_compile() {
+        use super::{ParseError, TzOffset};
+        use crate::timezone_impl::FixedTimespan;
+
+        fn assert_defmt<T: defmt::Format>() {}
+        assert_defmt::<Tz>();
+        assert_defmt::<ParseError>();
+        assert_defmt::<TzOffset>();
+        assert_defmt::<FixedTimespan>();
+    }
+
+    #[test]
+    fn tzdb_2026a_through_2026f_golden_rules() {
+        use sad_chrono::Offset;
+
+        // 2026f: America/Havana skips 2026-11-01 fallback, stays -04 through 2027-11-07.
+        let havana = Tz::America__Havana;
+        let hav_nov_2026 = NaiveDate::from_ymd_opt(2026, 11, 2)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&havana);
+        assert_eq!(hav_nov_2026.offset().fix().local_minus_utc(), -4 * 3600);
+        let hav_jan_2027 = NaiveDate::from_ymd_opt(2027, 1, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&havana);
+        assert_eq!(hav_jan_2027.offset().fix().local_minus_utc(), -4 * 3600);
+        let hav_dec_2027 = NaiveDate::from_ymd_opt(2027, 12, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&havana);
+        assert_eq!(hav_dec_2027.offset().fix().local_minus_utc(), -5 * 3600);
+
+        // 2026e: America/Winnipeg moves to permanent -05 (EST) after 2026-10-31.
+        let winnipeg = Tz::America__Winnipeg;
+        let wpg_jan_2027 = NaiveDate::from_ymd_opt(2027, 1, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&winnipeg);
+        assert_eq!(wpg_jan_2027.offset().fix().local_minus_utc(), -5 * 3600);
+        assert_eq!(wpg_jan_2027.offset().to_string(), "EST");
+
+        // 2026c: America/Edmonton moves to permanent -06 (CST).
+        let edmonton = Tz::America__Edmonton;
+        let edm_jan_2027 = NaiveDate::from_ymd_opt(2027, 1, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&edmonton);
+        assert_eq!(edm_jan_2027.offset().fix().local_minus_utc(), -6 * 3600);
+        assert_eq!(edm_jan_2027.offset().to_string(), "CST");
+
+        // 2026b: America/Vancouver moves to permanent -07 (MST).
+        let vancouver = Tz::America__Vancouver;
+        let van_jan_2027 = NaiveDate::from_ymd_opt(2027, 1, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&vancouver);
+        assert_eq!(van_jan_2027.offset().fix().local_minus_utc(), -7 * 3600);
+        assert_eq!(van_jan_2027.offset().to_string(), "MST");
+
+        // 2026d: America/Inuvik moves to permanent -06 (CST).
+        let inuvik = Tz::America__Inuvik;
+        let inu_jan_2027 = NaiveDate::from_ymd_opt(2027, 1, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&inuvik);
+        assert_eq!(inu_jan_2027.offset().fix().local_minus_utc(), -6 * 3600);
+        assert_eq!(inu_jan_2027.offset().to_string(), "CST");
+
+        // 2026c: Africa/Casablanca and Africa/El_Aaiun move to permanent +00 after 2026-09-20 02:00.
+        for morocco in [Tz::Africa__Casablanca, Tz::Africa__El_Aaiun] {
+            let before = NaiveDate::from_ymd_opt(2026, 9, 19)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .with_timezone(&morocco);
+            assert_eq!(before.offset().fix().local_minus_utc(), 3600);
+
+            let after = NaiveDate::from_ymd_opt(2026, 9, 21)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .with_timezone(&morocco);
+            assert_eq!(after.offset().fix().local_minus_utc(), 0);
+
+            let summer_2027 = NaiveDate::from_ymd_opt(2027, 7, 1)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .with_timezone(&morocco);
+            assert_eq!(summer_2027.offset().fix().local_minus_utc(), 0);
+        }
+
+        // 2026a: Europe/Chisinau aligned with EU transition times (01:00 UTC).
+        let chisinau = Tz::Europe__Chisinau;
+        let md_before = NaiveDate::from_ymd_opt(2026, 3, 29)
+            .unwrap()
+            .and_hms_opt(0, 59, 59)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&chisinau);
+        assert_eq!(md_before.offset().fix().local_minus_utc(), 2 * 3600);
+        let md_after = NaiveDate::from_ymd_opt(2026, 3, 29)
+            .unwrap()
+            .and_hms_opt(1, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&chisinau);
+        assert_eq!(md_after.offset().fix().local_minus_utc(), 3 * 3600);
+
+        // 2026d: POSIX USback zones follow US DST rules.
+        for (tz, std_hours) in [
+            (Tz::EST5EDT, -5),
+            (Tz::CST6CDT, -6),
+            (Tz::MST7MDT, -7),
+            (Tz::PST8PDT, -8),
+        ] {
+            let winter = NaiveDate::from_ymd_opt(2026, 12, 1)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .with_timezone(&tz);
+            assert_eq!(winter.offset().fix().local_minus_utc(), std_hours * 3600);
+
+            let summer = NaiveDate::from_ymd_opt(2026, 7, 1)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .with_timezone(&tz);
+            assert_eq!(
+                summer.offset().fix().local_minus_utc(),
+                (std_hours + 1) * 3600
+            );
+        }
+    }
 }

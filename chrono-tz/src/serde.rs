@@ -35,7 +35,16 @@ struct SerdeError<'a>(&'a str);
 
 impl fmt::Display for SerdeError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "failed to parse timezone: '{}'", self.0)
+        const MAX_INPUT_LEN: usize = 128;
+        if self.0.len() <= MAX_INPUT_LEN {
+            write!(f, "failed to parse timezone: '{}'", self.0)
+        } else {
+            let mut end = MAX_INPUT_LEN;
+            while !self.0.is_char_boundary(end) {
+                end -= 1;
+            }
+            write!(f, "failed to parse timezone: '{}...'", &self.0[..end])
+        }
     }
 }
 
@@ -57,5 +66,23 @@ mod tests {
             &[Token::Str("Europe/L")],
             "failed to parse timezone: 'Europe/L'",
         );
+    }
+
+    #[test]
+    fn serde_de_error_exact_128_and_truncated_long_input() {
+        let exact: &'static str = Box::leak("a".repeat(128).into_boxed_str());
+        let expected_exact = format!("failed to parse timezone: '{exact}'");
+        assert_de_tokens_error::<Tz>(&[Token::Str(exact)], &expected_exact);
+
+        let too_long: &'static str = Box::leak("b".repeat(200).into_boxed_str());
+        let expected_truncated = format!("failed to parse timezone: '{}...'", "b".repeat(128));
+        assert_de_tokens_error::<Tz>(&[Token::Str(too_long)], &expected_truncated);
+
+        // Multi-byte UTF-8 boundary: 127 'a's + 4-byte emoji -> truncates cleanly at 127 bytes.
+        let mut s = "a".repeat(127);
+        s.push('🦀');
+        let utf8_long: &'static str = Box::leak(s.into_boxed_str());
+        let expected_utf8 = format!("failed to parse timezone: '{}...'", "a".repeat(127));
+        assert_de_tokens_error::<Tz>(&[Token::Str(utf8_long)], &expected_utf8);
     }
 }
