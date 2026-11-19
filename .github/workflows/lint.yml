@@ -44,10 +44,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
-        with:
-          tool: actionlint
-      - run: actionlint -color
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - run: '"$(go env GOPATH)/bin/actionlint" -color'
 
   cargo-deny:
     if: github.event_name != 'schedule'

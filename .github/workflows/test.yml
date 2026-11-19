@@ -24,7 +24,16 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo test --workspace --color=always -- --color=always
-      - run: cargo test --workspace --all-features --color=always -- --color=always
+      - if: runner.os != 'Windows'
+        run: cargo test --workspace --all-features --color=always -- --color=always
+      # defmt emits embedded logger symbols (_defmt_acquire, etc.) that MSVC link.exe
+      # refuses to link into a host test binary without a defmt logger crate; check
+      # defmt compilation on Windows and test all non-defmt features.
+      - if: runner.os == 'Windows'
+        run: |
+          cargo check --workspace --all-features --all-targets --color=always
+          cargo test -p sad-parse-zoneinfo -p sad-chrono-tz-build --all-features --color=always -- --color=always
+          cargo test -p sad-chrono-tz --features "std serde arbitrary case-insensitive filter-by-regex" --color=always -- --color=always
       - run: cargo test --workspace --no-default-features --color=always -- --color=always
 
   rust_msrv:
