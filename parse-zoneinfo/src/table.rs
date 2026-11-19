@@ -38,6 +38,7 @@
 //! ```
 
 use std::collections::hash_map::{Entry, HashMap};
+use std::collections::HashSet;
 use std::fmt::{self, Write};
 
 use crate::line::{self, ChangeTime, DaySpec, Line, Month, TimeType, Year};
@@ -58,14 +59,20 @@ pub struct Table {
 impl Table {
     /// Tries to find the zoneset with the given name by looking it up in
     /// either the zonesets map or the links map.
+    ///
+    /// Resolves chained links and returns `None` on broken or cyclic links.
     pub fn get_zoneset(&self, zone_name: &str) -> Option<&[ZoneInfo]> {
-        if self.zonesets.contains_key(zone_name) {
-            Some(&*self.zonesets[zone_name])
-        } else if self.links.contains_key(zone_name) {
-            let target = &self.links[zone_name];
-            Some(&*self.zonesets[target])
-        } else {
-            None
+        let mut current = zone_name;
+        let mut visited = HashSet::new();
+
+        loop {
+            if let Some(zones) = self.zonesets.get(current) {
+                return Some(zones.as_slice());
+            }
+            if !visited.insert(current) {
+                return None;
+            }
+            current = self.links.get(current)?.as_str();
         }
     }
 }
@@ -124,24 +131,31 @@ impl RuleInfo {
     pub fn applies_to_year(&self, year: i64) -> bool {
         use line::Year::*;
 
-        match (self.from_year, self.to_year) {
-            (Number(from), None) => year == from,
-            (Number(from), Some(Maximum)) => year >= from,
-            (Number(from), Some(Number(to))) => year >= from && year <= to,
-            _ => unreachable!(),
-        }
+        let from = match self.from_year {
+            Minimum => i64::MIN,
+            Maximum => i64::MAX,
+            Number(y) => y,
+        };
+        let to = match self.to_year {
+            None => from,
+            Some(Minimum) => i64::MIN,
+            Some(Maximum) => i64::MAX,
+            Some(Number(y)) => y,
+        };
+        year >= from && year <= to
     }
 
     pub fn absolute_datetime(&self, year: i64, utc_offset: i64, dst_offset: i64) -> i64 {
-        let offset = match self.time_type {
+        let offset: i128 = match self.time_type {
             TimeType::UTC => 0,
-            TimeType::Standard => utc_offset,
-            TimeType::Wall => utc_offset + dst_offset,
+            TimeType::Standard => utc_offset as i128,
+            TimeType::Wall => utc_offset as i128 + dst_offset as i128,
         };
 
         let changetime = ChangeTime::UntilDay(Year::Number(year), self.month, self.day);
         let unused = 0;
-        changetime.to_timestamp(unused, unused) + self.time - offset
+        let ts = changetime.to_timestamp(unused, unused) as i128 + self.time as i128 - offset;
+        ts.clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 }
 
@@ -262,27 +276,21 @@ impl Format {
             Format::Alternate { ref standard, .. } if dst_offset == 0 => standard.clone(),
             Format::Alternate { ref dst, .. } => dst.clone(),
             Format::Offset => {
-                let offset = utc_offset + dst_offset;
-                let (sign, off) = if offset < 0 {
-                    ('-', -offset)
-                } else {
-                    ('+', offset)
-                };
+                let offset = utc_offset as i128 + dst_offset as i128;
+                let sign = if offset < 0 { '-' } else { '+' };
+                let off = offset.unsigned_abs();
 
                 let mut f = String::from(sign);
 
                 let minutes = off / 60;
-                let secs = (off % 60) as u8;
-                let mins = (minutes % 60) as u8;
-                let hours = (minutes / 60) as u8;
-
-                assert!(
-                    secs == 0,
-                    "numeric names are not used if the offset has fractional minutes"
-                );
+                let secs = off % 60;
+                let mins = minutes % 60;
+                let hours = minutes / 60;
 
                 let _ = write!(&mut f, "{hours:02}");
-                if mins != 0 {
+                if secs != 0 {
+                    let _ = write!(&mut f, "{mins:02}{secs:02}");
+                } else if mins != 0 {
                     let _ = write!(&mut f, "{mins:02}");
                 }
                 f
@@ -363,13 +371,19 @@ impl TableBuilder {
     /// Adds a new line describing the *continuation* of a zone definition.
     ///
     /// Returns an error if the builder wasn’t expecting a continuation line
-    /// (meaning, the previous line wasn’t a zone line)
+    /// (meaning, the previous line wasn’t a zone line). Forward references to
+    /// rulesets defined later in the zoneinfo data (such as `Rule EU` in
+    /// IANA `europe`) are allowed here and validated during transition building.
     pub fn add_continuation_line<'line>(
         &mut self,
         continuation_line: line::ZoneInfo<'line>,
     ) -> Result<(), Error<'line>> {
         let zoneset = match self.current_zoneset_name {
-            Some(ref name) => self.table.zonesets.get_mut(name).unwrap(),
+            Some(ref name) => self
+                .table
+                .zonesets
+                .get_mut(name)
+                .ok_or(Error::SurpriseContinuationLine)?,
             None => return Err(Error::SurpriseContinuationLine),
         };
 
@@ -453,3 +467,101 @@ impl<'line> fmt::Display for Error<'line> {
 }
 
 impl<'line> std::error::Error for Error<'line> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::line::{DaySpec, Line, Month, TimeType, Year};
+
+    #[test]
+    fn get_zoneset_chained_cyclic_and_broken_links() {
+        let mut builder = TableBuilder::new();
+        builder
+            .add_line(Line::new("Zone Real/Zone 1:00 - RZT").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Real/Zone Link/One").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Link/One Link/Two").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Missing/Target Broken/Link").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Cycle/B Cycle/A").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Cycle/A Cycle/B").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new("Link Self/Link Self/Link").unwrap())
+            .unwrap();
+        let table = builder.build();
+
+        assert!(table.get_zoneset("Real/Zone").is_some());
+        assert_eq!(
+            table.get_zoneset("Link/Two"),
+            table.get_zoneset("Real/Zone")
+        );
+        assert!(table.get_zoneset("Broken/Link").is_none());
+        assert!(table.get_zoneset("Cycle/A").is_none());
+        assert!(table.get_zoneset("Self/Link").is_none());
+    }
+
+    #[test]
+    fn continuation_unknown_ruleset_does_not_panic_on_timespans() {
+        use crate::transitions::TableTransitions;
+
+        let mut builder = TableBuilder::new();
+        builder
+            .add_line(Line::new("Zone Test/Zone 0 - TZ 1970").unwrap())
+            .unwrap();
+        builder
+            .add_line(Line::new(" 0 NoSuchRule T%sT").unwrap())
+            .unwrap();
+        let table = builder.build();
+        assert!(table.timespans("Test/Zone").is_none());
+    }
+
+    #[test]
+    fn format_offset_percent_z_edge_cases() {
+        let fmt = Format::new("%z");
+        assert_eq!(fmt.format(0, 0, None), "+00");
+        assert_eq!(fmt.format(-3 * 3600, 0, None), "-03");
+        assert_eq!(fmt.format(5 * 3600 + 30 * 60, 0, None), "+0530");
+        assert_eq!(fmt.format(3600 + 2 * 60 + 3, 0, None), "+010203");
+        assert_eq!(fmt.format(-(60 + 15), 0, None), "-000115");
+        assert_eq!(fmt.format(300 * 3600, 0, None), "+300");
+        assert!(!fmt.format(i64::MIN, 0, None).is_empty());
+    }
+
+    #[test]
+    fn rule_info_min_max_years_no_panic() {
+        let rule_min_max = RuleInfo {
+            from_year: Year::Minimum,
+            to_year: Some(Year::Maximum),
+            month: Month::January,
+            day: DaySpec::Ordinal(1),
+            time: 0,
+            time_type: TimeType::UTC,
+            time_to_add: 0,
+            letters: None,
+        };
+        assert!(rule_min_max.applies_to_year(2026));
+        assert!(rule_min_max.applies_to_year(i64::MIN));
+
+        let rule_inverted = RuleInfo {
+            from_year: Year::Maximum,
+            to_year: Some(Year::Number(2000)),
+            month: Month::January,
+            day: DaySpec::Ordinal(1),
+            time: 0,
+            time_type: TimeType::Wall,
+            time_to_add: 0,
+            letters: None,
+        };
+        assert!(!rule_inverted.applies_to_year(2000));
+        let _ = rule_inverted.absolute_datetime(i64::MAX, i64::MAX, i64::MAX);
+    }
+}

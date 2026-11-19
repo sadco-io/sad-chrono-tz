@@ -143,7 +143,7 @@ pub struct FixedTimespan {
 impl FixedTimespan {
     /// The total offset in effect during this timespan.
     pub fn total_offset(&self) -> i64 {
-        self.utc_offset + self.dst_offset
+        self.utc_offset.saturating_add(self.dst_offset)
     }
 }
 
@@ -159,6 +159,9 @@ impl TableTransitions for Table {
         let mut builder = FixedTimespanSetBuilder::default();
 
         let zoneset = self.get_zoneset(zone_name)?;
+        if zoneset.is_empty() {
+            return None;
+        }
 
         for (i, zone_info) in zoneset.iter().enumerate() {
             let mut dst_offset = 0;
@@ -179,7 +182,7 @@ impl TableTransitions for Table {
                         utc_offset,
                         &mut insert_start_transition,
                         &mut start_zone_id,
-                    );
+                    )?;
                 }
 
                 Saving::OneOff(amount) => {
@@ -190,11 +193,11 @@ impl TableTransitions for Table {
                         utc_offset,
                         &mut insert_start_transition,
                         &mut start_zone_id,
-                    );
+                    )?;
                 }
 
                 Saving::Multiple(ref rules) => {
-                    let rules = &self.rulesets[rules];
+                    let rules = self.rulesets.get(rules)?;
                     builder.add_multiple_saving(
                         zone_info,
                         rules,
@@ -205,33 +208,32 @@ impl TableTransitions for Table {
                         &mut start_zone_id,
                         &mut start_utc_offset,
                         &mut start_dst_offset,
-                    );
+                    )?;
                 }
             }
 
-            if insert_start_transition && start_zone_id.is_some() {
-                let t = (
-                    builder.start_time.expect("Start time"),
-                    FixedTimespan {
-                        utc_offset: start_utc_offset,
-                        dst_offset: start_dst_offset,
-                        name: start_zone_id.clone().expect("Start zone ID"),
-                    },
-                );
-                builder.rest.push(t);
+            if insert_start_transition {
+                if let Some(name) = start_zone_id.clone() {
+                    let start_time = builder.start_time?;
+                    let t = (
+                        start_time,
+                        FixedTimespan {
+                            utc_offset: start_utc_offset,
+                            dst_offset: start_dst_offset,
+                            name,
+                        },
+                    );
+                    builder.rest.push(t);
+                }
             }
 
             if use_until {
-                builder.start_time = Some(
-                    zone_info
-                        .end_time
-                        .expect("End time")
-                        .to_timestamp(utc_offset, dst_offset),
-                );
+                let end_time = zone_info.end_time?;
+                builder.start_time = Some(end_time.to_timestamp(utc_offset, dst_offset));
             }
         }
 
-        Some(builder.build())
+        builder.build()
     }
 }
 
@@ -253,12 +255,12 @@ impl FixedTimespanSetBuilder {
         utc_offset: i64,
         insert_start_transition: &mut bool,
         start_zone_id: &mut Option<String>,
-    ) {
+    ) -> Option<()> {
         *dst_offset = amount;
         *start_zone_id = Some(timespan.format.format(utc_offset, *dst_offset, None));
 
         if *insert_start_transition {
-            let time = self.start_time.unwrap();
+            let time = self.start_time?;
             let timespan = FixedTimespan {
                 utc_offset: timespan.offset,
                 dst_offset: *dst_offset,
@@ -274,6 +276,7 @@ impl FixedTimespanSetBuilder {
                 name: start_zone_id.clone().unwrap_or_default(),
             });
         }
+        Some(())
     }
 
     #[allow(unused_results)]
@@ -289,12 +292,20 @@ impl FixedTimespanSetBuilder {
         start_zone_id: &mut Option<String>,
         start_utc_offset: &mut i64,
         start_dst_offset: &mut i64,
-    ) {
+    ) -> Option<()> {
         use std::mem::replace;
 
+        let end_time = if use_until {
+            Some(timespan.end_time?)
+        } else {
+            None
+        };
+
         for year in 1800..2100 {
-            if use_until && year > timespan.end_time.unwrap().year() {
-                break;
+            if let Some(end_time) = end_time {
+                if year > end_time.year() {
+                    break;
+                }
             }
 
             let mut activated_rules = rules
@@ -303,13 +314,8 @@ impl FixedTimespanSetBuilder {
                 .collect::<Vec<_>>();
 
             loop {
-                if use_until {
-                    self.until_time = Some(
-                        timespan
-                            .end_time
-                            .unwrap()
-                            .to_timestamp(utc_offset, *dst_offset),
-                    );
+                if let Some(end_time) = end_time {
+                    self.until_time = Some(end_time.to_timestamp(utc_offset, *dst_offset));
                 }
 
                 // Find the minimum rule and its start time based on the current
@@ -327,18 +333,19 @@ impl FixedTimespanSetBuilder {
 
                 let earliest_rule = activated_rules.remove(pos);
 
-                if use_until && earliest_at >= self.until_time.unwrap() {
-                    break;
+                if let Some(until_time) = self.until_time {
+                    if use_until && earliest_at >= until_time {
+                        break;
+                    }
                 }
 
                 *dst_offset = earliest_rule.time_to_add;
 
-                if *insert_start_transition && earliest_at == self.start_time.unwrap() {
-                    *insert_start_transition = false;
-                }
-
                 if *insert_start_transition {
-                    if earliest_at < self.start_time.unwrap() {
+                    let start_time = self.start_time?;
+                    if earliest_at == start_time {
+                        *insert_start_transition = false;
+                    } else if earliest_at < start_time {
                         let _ = replace(start_utc_offset, timespan.offset);
                         let _ = replace(start_dst_offset, *dst_offset);
                         let _ = start_zone_id.replace(timespan.format.format(
@@ -347,10 +354,9 @@ impl FixedTimespanSetBuilder {
                             earliest_rule.letters.as_ref(),
                         ));
                         continue;
-                    }
-
-                    if start_zone_id.is_none()
-                        && *start_utc_offset + *start_dst_offset == timespan.offset + *dst_offset
+                    } else if start_zone_id.is_none()
+                        && (*start_utc_offset as i128 + *start_dst_offset as i128)
+                            == (timespan.offset as i128 + *dst_offset as i128)
                     {
                         let _ = start_zone_id.replace(timespan.format.format(
                             utc_offset,
@@ -375,9 +381,10 @@ impl FixedTimespanSetBuilder {
                 self.rest.push(t);
             }
         }
+        Some(())
     }
 
-    fn build(mut self) -> FixedTimespanSet {
+    fn build(mut self) -> Option<FixedTimespanSet> {
         self.rest.sort_by(|a, b| a.0.cmp(&b.0));
 
         let first = match self.first {
@@ -386,7 +393,7 @@ impl FixedTimespanSetBuilder {
                 .rest
                 .iter()
                 .find(|t| t.1.dst_offset == 0)
-                .unwrap()
+                .or_else(|| self.rest.first())?
                 .1
                 .clone(),
         };
@@ -396,7 +403,7 @@ impl FixedTimespanSetBuilder {
             rest: self.rest,
         };
         optimise(&mut zoneset);
-        zoneset
+        Some(zoneset)
     }
 }
 
@@ -409,8 +416,8 @@ fn optimise(transitions: &mut FixedTimespanSet) {
         if to_i > 1 {
             let from = transitions.rest[from_i].0;
             let to = transitions.rest[to_i - 1].0;
-            if from + transitions.rest[to_i - 1].1.total_offset()
-                <= to + transitions.rest[to_i - 2].1.total_offset()
+            if (from as i128 + transitions.rest[to_i - 1].1.total_offset() as i128)
+                <= (to as i128 + transitions.rest[to_i - 2].1.total_offset() as i128)
             {
                 transitions.rest[to_i - 1].1 = transitions.rest[from_i].1.clone();
                 from_i += 1;
@@ -437,6 +444,7 @@ fn optimise(transitions: &mut FixedTimespanSet) {
 mod test {
     use super::optimise;
     use super::*;
+    use crate::table::Format;
 
     // Allow unused results in test code, because the only ‘results’ that
     // we need to ignore are the ones from inserting and removing from
@@ -557,5 +565,86 @@ mod test {
 
         optimise(&mut transitions);
         assert_eq!(transitions, result);
+    }
+
+    #[test]
+    fn timespans_malformed_table_no_panic() {
+        // Empty zoneset
+        let mut table = Table::default();
+        table.zonesets.insert("Empty".to_owned(), Vec::new());
+        assert!(table.timespans("Empty").is_none());
+
+        // Missing ruleset
+        table.zonesets.insert(
+            "MissingRule".to_owned(),
+            vec![ZoneInfo {
+                offset: 0,
+                format: Format::new("TST"),
+                saving: Saving::Multiple("NoSuchRule".to_owned()),
+                end_time: None,
+            }],
+        );
+        assert!(table.timespans("MissingRule").is_none());
+
+        // Non-final zone line missing end_time
+        table.zonesets.insert(
+            "MissingUntil".to_owned(),
+            vec![
+                ZoneInfo {
+                    offset: 0,
+                    format: Format::new("TST"),
+                    saving: Saving::NoSaving,
+                    end_time: None,
+                },
+                ZoneInfo {
+                    offset: 3600,
+                    format: Format::new("TST2"),
+                    saving: Saving::NoSaving,
+                    end_time: None,
+                },
+            ],
+        );
+        assert!(table.timespans("MissingUntil").is_none());
+
+        // Empty ruleset / no standard rule when first is None
+        table.rulesets.insert("EmptyRules".to_owned(), Vec::new());
+        table.zonesets.insert(
+            "NoStandardRule".to_owned(),
+            vec![ZoneInfo {
+                offset: 0,
+                format: Format::new("TST"),
+                saving: Saving::Multiple("EmptyRules".to_owned()),
+                end_time: None,
+            }],
+        );
+        assert!(table.timespans("NoStandardRule").is_none());
+
+        // Extreme timestamps in optimise() do not overflow
+        let mut extreme = FixedTimespanSet {
+            first: FixedTimespan {
+                utc_offset: 0,
+                dst_offset: 0,
+                name: "A".to_owned(),
+            },
+            rest: vec![
+                (
+                    i64::MAX - 10,
+                    FixedTimespan {
+                        utc_offset: i64::MAX,
+                        dst_offset: i64::MAX,
+                        name: "B".to_owned(),
+                    },
+                ),
+                (
+                    i64::MAX,
+                    FixedTimespan {
+                        utc_offset: i64::MAX,
+                        dst_offset: i64::MAX,
+                        name: "C".to_owned(),
+                    },
+                ),
+            ],
+        };
+        optimise(&mut extreme);
     }
 }

@@ -261,11 +261,17 @@ pub enum Weekday {
 
 impl Weekday {
     fn calculate(year: i64, month: Month, day: i8) -> Weekday {
-        let m = month as i64;
-        let y = if m < 3 { year - 1 } else { year };
-        let d = day as i64;
-        const T: [i64; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-        match (y + y / 4 - y / 100 + y / 400 + T[m as usize - 1] + d) % 7 {
+        let m = month as usize;
+        let y = if m < 3 {
+            (year as i128) - 1
+        } else {
+            year as i128
+        };
+        let d = day as i128;
+        const T: [i128; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        let dow = (y + y.div_euclid(4) - y.div_euclid(100) + y.div_euclid(400) + T[m - 1] + d)
+            .rem_euclid(7);
+        match dow {
             0 => Weekday::Sunday,
             1 => Weekday::Monday,
             2 => Weekday::Tuesday,
@@ -273,7 +279,7 @@ impl Weekday {
             4 => Weekday::Thursday,
             5 => Weekday::Friday,
             6 => Weekday::Saturday,
-            _ => panic!("why is negative modulus designed so?"),
+            _ => unreachable!("rem_euclid(7) is always in 0..=6"),
         }
     }
 }
@@ -318,63 +324,76 @@ pub enum DaySpec {
 }
 
 impl DaySpec {
+    fn resolve_day(&self, year: i64, month: Month) -> (i64, Month, i8) {
+        let leap = is_leap(year);
+        let length = month.length(leap);
+
+        match *self {
+            DaySpec::Ordinal(day) => (year, month, day),
+            DaySpec::Last(weekday) => {
+                let day = (1..=length)
+                    .rev()
+                    .find(|&day| Weekday::calculate(year, month, day) == weekday)
+                    .unwrap_or(length);
+                (year, month, day)
+            }
+            DaySpec::LastOnOrBefore(weekday, day) => {
+                let d = day as i16;
+                let (prev_year, prev_month) = match month.prev_in_year() {
+                    Ok(m) => (year, m),
+                    Err(_) => (year.saturating_sub(1), Month::December),
+                };
+                let prev_length = prev_month.length(is_leap(prev_year)) as i16;
+
+                for inner_day in (d - 6..=d).rev() {
+                    if inner_day >= 1
+                        && inner_day <= length as i16
+                        && Weekday::calculate(year, month, inner_day as i8) == weekday
+                    {
+                        return (year, month, inner_day as i8);
+                    } else if inner_day < 1 {
+                        let candidate = prev_length + inner_day;
+                        if (1..=31).contains(&candidate)
+                            && Weekday::calculate(prev_year, prev_month, candidate as i8) == weekday
+                        {
+                            return (prev_year, prev_month, candidate as i8);
+                        }
+                    }
+                }
+                (year, month, day.clamp(1, length))
+            }
+            DaySpec::FirstOnOrAfter(weekday, day) => {
+                let d = day as i16;
+                let (next_year, next_month) = match month.next_in_year() {
+                    Ok(m) => (year, m),
+                    Err(_) => (year.saturating_add(1), Month::January),
+                };
+
+                for inner_day in d..=d + 6 {
+                    if inner_day >= 1
+                        && inner_day <= length as i16
+                        && Weekday::calculate(year, month, inner_day as i8) == weekday
+                    {
+                        return (year, month, inner_day as i8);
+                    } else if inner_day > length as i16 {
+                        let candidate = inner_day - length as i16;
+                        if (1..=31).contains(&candidate)
+                            && Weekday::calculate(next_year, next_month, candidate as i8) == weekday
+                        {
+                            return (next_year, next_month, candidate as i8);
+                        }
+                    }
+                }
+                (year, month, day.clamp(1, length))
+            }
+        }
+    }
+
     /// Converts this day specification to a concrete date, given the year and
     /// month it should occur in.
     pub fn to_concrete_day(&self, year: i64, month: Month) -> (Month, i8) {
-        let leap = is_leap(year);
-        let length = month.length(leap);
-        // we will never hit the 0 because we unwrap prev_in_year below
-        let prev_length = month.prev_in_year().map(|m| m.length(leap)).unwrap_or(0);
-
-        match *self {
-            DaySpec::Ordinal(day) => (month, day),
-            DaySpec::Last(weekday) => (
-                month,
-                (1..length + 1)
-                    .rev()
-                    .find(|&day| Weekday::calculate(year, month, day) == weekday)
-                    .unwrap(),
-            ),
-            DaySpec::LastOnOrBefore(weekday, day) => (-7..day + 1)
-                .rev()
-                .flat_map(|inner_day| {
-                    if inner_day >= 1 && Weekday::calculate(year, month, inner_day) == weekday {
-                        Some((month, inner_day))
-                    } else if inner_day < 1
-                        && Weekday::calculate(
-                            year,
-                            month.prev_in_year().unwrap(),
-                            prev_length + inner_day,
-                        ) == weekday
-                    {
-                        // inner_day is negative, so this is subtraction
-                        Some((month.prev_in_year().unwrap(), prev_length + inner_day))
-                    } else {
-                        None
-                    }
-                })
-                .next()
-                .unwrap(),
-            DaySpec::FirstOnOrAfter(weekday, day) => (day..day + 8)
-                .flat_map(|inner_day| {
-                    if inner_day <= length && Weekday::calculate(year, month, inner_day) == weekday
-                    {
-                        Some((month, inner_day))
-                    } else if inner_day > length
-                        && Weekday::calculate(
-                            year,
-                            month.next_in_year().unwrap(),
-                            inner_day - length,
-                        ) == weekday
-                    {
-                        Some((month.next_in_year().unwrap(), inner_day - length))
-                    } else {
-                        None
-                    }
-                })
-                .next()
-                .unwrap(),
-        }
+        let (_, resolved_month, resolved_day) = self.resolve_day(year, month);
+        (resolved_month, resolved_day)
     }
 }
 
@@ -382,9 +401,19 @@ impl FromStr for DaySpec {
     type Err = Error;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        // Parse the field as a number if it vaguely resembles one.
-        if input.chars().all(|c| c.is_ascii_digit()) {
-            return Ok(DaySpec::Ordinal(input.parse().unwrap()));
+        if input.is_empty() {
+            return Err(Error::InvalidDaySpec(input.to_string()));
+        }
+
+        // Parse the field as a number if it consists solely of ASCII digits.
+        if input.bytes().all(|b| b.is_ascii_digit()) {
+            let day = input
+                .parse::<i8>()
+                .map_err(|_| Error::InvalidDaySpec(input.to_string()))?;
+            if !(1..=31).contains(&day) {
+                return Err(Error::InvalidDaySpec(input.to_string()));
+            }
+            return Ok(DaySpec::Ordinal(day));
         }
         // Check if it starts with ‘last’, and trim off the first four bytes if it does
         else if let Some(remainder) = input.strip_prefix("last") {
@@ -404,9 +433,14 @@ impl FromStr for DaySpec {
         };
 
         let day = match input.get(5..) {
-            Some(day) => u8::from_str(day).map_err(|_| Error::InvalidDaySpec(input.to_string()))?,
-            None => return Err(Error::InvalidDaySpec(input.to_string())),
-        } as i8;
+            Some(day) if !day.is_empty() && day.bytes().all(|b| b.is_ascii_digit()) => day
+                .parse::<i8>()
+                .map_err(|_| Error::InvalidDaySpec(input.to_string()))?,
+            _ => return Err(Error::InvalidDaySpec(input.to_string())),
+        };
+        if !(1..=31).contains(&day) {
+            return Err(Error::InvalidDaySpec(input.to_string()));
+        }
 
         Ok(match dir {
             true => DaySpec::FirstOnOrAfter(weekday, day),
@@ -473,34 +507,61 @@ impl FromStr for TimeSpec {
             return Ok(TimeSpec::Zero);
         }
 
-        let neg = if input.starts_with('-') { -1 } else { 1 };
-        let mut state = TimeSpec::Zero;
-        for part in input.split(':') {
-            state = match (state, part) {
-                (TimeSpec::Zero, hour) => TimeSpec::Hours(
-                    i8::from_str(hour)
-                        .map_err(|_| Error::InvalidTimeSpecAndType(input.to_string()))?,
-                ),
-                (TimeSpec::Hours(hours), minutes) if minutes.len() == 2 => TimeSpec::HoursMinutes(
-                    hours,
-                    i8::from_str(minutes)
-                        .map_err(|_| Error::InvalidTimeSpecAndType(input.to_string()))?
-                        * neg,
-                ),
-                (TimeSpec::HoursMinutes(hours, minutes), seconds) if seconds.len() == 2 => {
-                    TimeSpec::HoursMinutesSeconds(
-                        hours,
-                        minutes,
-                        i8::from_str(seconds)
-                            .map_err(|_| Error::InvalidTimeSpecAndType(input.to_string()))?
-                            * neg,
-                    )
-                }
-                _ => return Err(Error::InvalidTimeSpecAndType(input.to_string())),
-            };
+        let (neg, unsigned) = match input.strip_prefix('-') {
+            Some(rest) => (-1i8, rest),
+            None => (1i8, input),
+        };
+        if unsigned.is_empty() {
+            return Err(Error::InvalidTimeSpecAndType(input.to_string()));
         }
 
-        Ok(state)
+        let mut parts = unsigned.split(':');
+        let hour_str = parts
+            .next()
+            .ok_or_else(|| Error::InvalidTimeSpecAndType(input.to_string()))?;
+        if hour_str.is_empty() || !hour_str.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::InvalidTimeSpecAndType(input.to_string()));
+        }
+        let hours = if neg == -1 {
+            let mut buf = String::with_capacity(hour_str.len() + 1);
+            buf.push('-');
+            buf.push_str(hour_str);
+            i8::from_str(&buf).map_err(|_| Error::InvalidTimeSpecAndType(input.to_string()))?
+        } else {
+            i8::from_str(hour_str).map_err(|_| Error::InvalidTimeSpecAndType(input.to_string()))?
+        };
+
+        let Some(min_str) = parts.next() else {
+            return Ok(TimeSpec::Hours(hours));
+        };
+        if min_str.len() != 2 || !min_str.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::InvalidTimeSpecAndType(input.to_string()));
+        }
+        let mins =
+            i8::from_str(min_str).map_err(|_| Error::InvalidTimeSpecAndType(input.to_string()))?;
+        if !(0..=59).contains(&mins) {
+            return Err(Error::InvalidTimeSpecAndType(input.to_string()));
+        }
+        let mins = mins * neg;
+
+        let Some(sec_str) = parts.next() else {
+            return Ok(TimeSpec::HoursMinutes(hours, mins));
+        };
+        if sec_str.len() != 2 || !sec_str.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::InvalidTimeSpecAndType(input.to_string()));
+        }
+        let secs =
+            i8::from_str(sec_str).map_err(|_| Error::InvalidTimeSpecAndType(input.to_string()))?;
+        if !(0..=59).contains(&secs) {
+            return Err(Error::InvalidTimeSpecAndType(input.to_string()));
+        }
+        let secs = secs * neg;
+
+        if parts.next().is_some() {
+            return Err(Error::InvalidTimeSpecAndType(input.to_string()));
+        }
+
+        Ok(TimeSpec::HoursMinutesSeconds(hours, mins, secs))
     }
 }
 
@@ -563,26 +624,20 @@ pub enum ChangeTime {
     UntilTime(Year, Month, DaySpec, TimeSpecAndType),
 }
 
+fn days_until_start_of_year(year: i64) -> i128 {
+    fn days_from_epoch_zero(y: i128) -> i128 {
+        let ym1 = y - 1;
+        let leaps = ym1.div_euclid(4) - ym1.div_euclid(100) + ym1.div_euclid(400) + 1;
+        y * 365 + leaps
+    }
+
+    days_from_epoch_zero(year as i128) - days_from_epoch_zero(1970)
+}
+
 impl ChangeTime {
     /// Convert this change time to an absolute timestamp, as the number of
     /// seconds since the Unix epoch that the change occurs at.
     pub fn to_timestamp(&self, utc_offset: i64, dst_offset: i64) -> i64 {
-        fn seconds_in_year(year: i64) -> i64 {
-            if is_leap(year) {
-                366 * 24 * 60 * 60
-            } else {
-                365 * 24 * 60 * 60
-            }
-        }
-
-        fn seconds_until_start_of_year(year: i64) -> i64 {
-            if year >= 1970 {
-                (1970..year).map(seconds_in_year).sum()
-            } else {
-                -(year..1970).map(seconds_in_year).sum::<i64>()
-            }
-        }
-
         fn time_to_timestamp(
             year: i64,
             month: i8,
@@ -590,8 +645,9 @@ impl ChangeTime {
             hour: i8,
             minute: i8,
             second: i8,
+            tz_offset: i128,
         ) -> i64 {
-            const MONTHS_NON_LEAP: [i64; 12] = [
+            const MONTHS_NON_LEAP: [i128; 12] = [
                 0,
                 31,
                 31 + 28,
@@ -605,7 +661,7 @@ impl ChangeTime {
                 31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31,
                 31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30,
             ];
-            const MONTHS_LEAP: [i64; 12] = [
+            const MONTHS_LEAP: [i128; 12] = [
                 0,
                 31,
                 31 + 29,
@@ -619,67 +675,74 @@ impl ChangeTime {
                 31 + 29 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31,
                 31 + 29 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30,
             ];
-            seconds_until_start_of_year(year)
-                + 60 * 60
-                    * 24
-                    * if is_leap(year) {
-                        MONTHS_LEAP[month as usize - 1]
-                    } else {
-                        MONTHS_NON_LEAP[month as usize - 1]
-                    }
-                + 60 * 60 * 24 * (day as i64 - 1)
-                + 60 * 60 * hour as i64
-                + 60 * minute as i64
-                + second as i64
+            let month_idx = (month as usize).saturating_sub(1).min(11);
+            let month_days = if is_leap(year) {
+                MONTHS_LEAP[month_idx]
+            } else {
+                MONTHS_NON_LEAP[month_idx]
+            };
+            let total_days = days_until_start_of_year(year) + month_days + (day as i128 - 1);
+            let secs = total_days * 86_400
+                + (hour as i128) * 3_600
+                + (minute as i128) * 60
+                + (second as i128)
+                - tz_offset;
+            secs.clamp(i64::MIN as i128, i64::MAX as i128) as i64
         }
 
+        fn concrete_year(y: Year) -> i64 {
+            match y {
+                Year::Number(n) => n,
+                Year::Minimum => i64::MIN,
+                Year::Maximum => i64::MAX,
+            }
+        }
+
+        let utc_and_dst = utc_offset as i128 + dst_offset as i128;
+
         match *self {
-            ChangeTime::UntilYear(Year::Number(y)) => {
-                time_to_timestamp(y, 1, 1, 0, 0, 0) - (utc_offset + dst_offset)
+            ChangeTime::UntilYear(y) => {
+                time_to_timestamp(concrete_year(y), 1, 1, 0, 0, 0, utc_and_dst)
             }
-            ChangeTime::UntilMonth(Year::Number(y), m) => {
-                time_to_timestamp(y, m as i8, 1, 0, 0, 0) - (utc_offset + dst_offset)
+            ChangeTime::UntilMonth(y, m) => {
+                time_to_timestamp(concrete_year(y), m as i8, 1, 0, 0, 0, utc_and_dst)
             }
-            ChangeTime::UntilDay(Year::Number(y), m, d) => {
-                let (m, wd) = d.to_concrete_day(y, m);
-                time_to_timestamp(y, m as i8, wd, 0, 0, 0) - (utc_offset + dst_offset)
+            ChangeTime::UntilDay(y, m, d) => {
+                let (ry, rm, wd) = d.resolve_day(concrete_year(y), m);
+                time_to_timestamp(ry, rm as i8, wd, 0, 0, 0, utc_and_dst)
             }
-            ChangeTime::UntilTime(Year::Number(y), m, d, time) => {
-                (match time.0 {
-                    TimeSpec::Zero => {
-                        let (m, wd) = d.to_concrete_day(y, m);
-                        time_to_timestamp(y, m as i8, wd, 0, 0, 0)
-                    }
-                    TimeSpec::Hours(h) => {
-                        let (m, wd) = d.to_concrete_day(y, m);
-                        time_to_timestamp(y, m as i8, wd, h, 0, 0)
-                    }
+            ChangeTime::UntilTime(y, m, d, time) => {
+                let tz_offset = match time.1 {
+                    TimeType::UTC => 0,
+                    TimeType::Standard => utc_offset as i128,
+                    TimeType::Wall => utc_and_dst,
+                };
+                let (ry, rm, wd) = d.resolve_day(concrete_year(y), m);
+                match time.0 {
+                    TimeSpec::Zero => time_to_timestamp(ry, rm as i8, wd, 0, 0, 0, tz_offset),
+                    TimeSpec::Hours(h) => time_to_timestamp(ry, rm as i8, wd, h, 0, 0, tz_offset),
                     TimeSpec::HoursMinutes(h, min) => {
-                        let (m, wd) = d.to_concrete_day(y, m);
-                        time_to_timestamp(y, m as i8, wd, h, min, 0)
+                        time_to_timestamp(ry, rm as i8, wd, h, min, 0, tz_offset)
                     }
                     TimeSpec::HoursMinutesSeconds(h, min, s) => {
-                        let (m, wd) = d.to_concrete_day(y, m);
-                        time_to_timestamp(y, m as i8, wd, h, min, s)
+                        time_to_timestamp(ry, rm as i8, wd, h, min, s, tz_offset)
                     }
-                }) - match time.1 {
-                    TimeType::UTC => 0,
-                    TimeType::Standard => utc_offset,
-                    TimeType::Wall => utc_offset + dst_offset,
                 }
             }
-
-            _ => unreachable!(),
         }
     }
 
     pub fn year(&self) -> i64 {
-        match *self {
-            ChangeTime::UntilYear(Year::Number(y)) => y,
-            ChangeTime::UntilMonth(Year::Number(y), ..) => y,
-            ChangeTime::UntilDay(Year::Number(y), ..) => y,
-            ChangeTime::UntilTime(Year::Number(y), ..) => y,
-            _ => unreachable!(),
+        let y = match *self {
+            ChangeTime::UntilYear(y)
+            | ChangeTime::UntilMonth(y, ..)
+            | ChangeTime::UntilDay(y, ..)
+            | ChangeTime::UntilTime(y, ..) => y,
+        };
+        match y {
+            Year::Number(n) => n,
+            Year::Minimum => i64::MIN,
+            Year::Maximum => i64::MAX,
         }
     }
 }
@@ -730,12 +793,18 @@ impl<'a> ZoneInfo<'a> {
                         format,
                     },
                     year,
-                ) => ZoneInfoState::Month {
-                    offset,
-                    saving,
-                    format,
-                    year: Year::from_str(year)?,
-                },
+                ) => {
+                    let parsed_year = Year::from_str(year)?;
+                    if !matches!(parsed_year, Year::Number(_)) {
+                        return Err(Error::FailedYearParse(year.to_string()));
+                    }
+                    ZoneInfoState::Month {
+                        offset,
+                        saving,
+                        format,
+                        year: parsed_year,
+                    }
+                }
                 (
                     ZoneInfoState::Month {
                         offset,
@@ -958,7 +1027,7 @@ impl<'a> Rule<'a> {
         // Extra complexity does not seem worth it while they don't seem to be used in practice.
         for part in input.split_ascii_whitespace() {
             if part.starts_with('#') {
-                continue;
+                break;
             }
 
             state = match (state, part) {
@@ -1587,5 +1656,155 @@ mod tests {
         assert!(is_leap(2000));
         assert!(is_leap(2016));
         assert!(!is_leap(2100));
+    }
+
+    #[test]
+    fn days_until_start_of_year_matches_loop() {
+        fn loop_seconds(year: i64) -> i128 {
+            let secs = |y: i64| -> i128 {
+                if is_leap(y) {
+                    366 * 86_400
+                } else {
+                    365 * 86_400
+                }
+            };
+            if year >= 1970 {
+                (1970..year).map(secs).sum()
+            } else {
+                -(year..1970).map(secs).sum::<i128>()
+            }
+        }
+
+        for year in -10_000..=10_000 {
+            assert_eq!(
+                days_until_start_of_year(year) * 86_400,
+                loop_seconds(year),
+                "mismatch at year {year}"
+            );
+        }
+    }
+
+    #[test]
+    fn change_time_extreme_years_no_hang_or_panic() {
+        assert_eq!(
+            ChangeTime::UntilYear(Year::Number(9_223_372_036_854_775_807)).to_timestamp(0, 0),
+            i64::MAX
+        );
+        assert_eq!(
+            ChangeTime::UntilYear(Year::Number(i64::MIN)).to_timestamp(0, 0),
+            i64::MIN
+        );
+        assert_eq!(
+            ChangeTime::UntilYear(Year::Minimum).to_timestamp(0, 0),
+            i64::MIN
+        );
+        assert_eq!(
+            ChangeTime::UntilYear(Year::Maximum).to_timestamp(0, 0),
+            i64::MAX
+        );
+        assert_eq!(ChangeTime::UntilYear(Year::Minimum).year(), i64::MIN);
+        assert_eq!(ChangeTime::UntilYear(Year::Maximum).year(), i64::MAX);
+    }
+
+    #[test]
+    fn day_spec_rejects_empty_and_out_of_range() {
+        for bad in [
+            "", "0", "32", "128", "99999", "Sun>=0", "Sun>=32", "Sun>=200", "Sun<=0", "Sun<=32",
+            "Sun<=128", "Sun>=", "Sun", "Sun>=-1",
+        ] {
+            assert!(
+                DaySpec::from_str(bad).is_err(),
+                "expected DaySpec error for {bad:?}"
+            );
+        }
+        assert_eq!(DaySpec::from_str("1"), Ok(DaySpec::Ordinal(1)));
+        assert_eq!(DaySpec::from_str("31"), Ok(DaySpec::Ordinal(31)));
+        assert_eq!(
+            DaySpec::from_str("Sun>=31"),
+            Ok(DaySpec::FirstOnOrAfter(Weekday::Sunday, 31))
+        );
+    }
+
+    #[test]
+    fn day_spec_year_boundary_and_extreme_days() {
+        // 1970-01-01 is Thursday; Mon<=1 resolves to Dec 29, 1969.
+        let jan_before = DaySpec::LastOnOrBefore(Weekday::Monday, 1);
+        assert_eq!(
+            jan_before.to_concrete_day(1970, Month::January),
+            (Month::December, 29)
+        );
+        assert_eq!(
+            ChangeTime::UntilDay(Year::Number(1970), Month::January, jan_before).to_timestamp(0, 0),
+            -3 * 86_400
+        );
+
+        // 2026-12-31 is Thursday; Sun>=31 resolves to Jan 3, 2027.
+        let dec_after = DaySpec::FirstOnOrAfter(Weekday::Sunday, 31);
+        assert_eq!(
+            dec_after.to_concrete_day(2026, Month::December),
+            (Month::January, 3)
+        );
+        let ts_2027_jan_3 = ChangeTime::UntilDay(Year::Number(2027), Month::January, DaySpec::Ordinal(3))
+            .to_timestamp(0, 0);
+        assert_eq!(
+            ChangeTime::UntilDay(Year::Number(2026), Month::December, dec_after).to_timestamp(0, 0),
+            ts_2027_jan_3
+        );
+
+        // Programmatically constructed extreme days do not panic.
+        let _ = DaySpec::FirstOnOrAfter(Weekday::Sunday, 127).to_concrete_day(i64::MAX, Month::December);
+        let _ = DaySpec::LastOnOrBefore(Weekday::Sunday, 127).to_concrete_day(i64::MIN, Month::January);
+        let _ = DaySpec::LastOnOrBefore(Weekday::Sunday, i8::MIN).to_concrete_day(0, Month::January);
+    }
+
+    #[test]
+    fn weekday_negative_and_extreme_years() {
+        assert_eq!(Weekday::calculate(0, Month::January, 1), Weekday::Saturday);
+        assert_eq!(Weekday::calculate(-1, Month::January, 1), Weekday::Friday);
+        let _ = Weekday::calculate(i64::MIN, Month::January, 1);
+        let _ = Weekday::calculate(i64::MAX, Month::December, 31);
+    }
+
+    #[test]
+    fn zone_rejects_min_max_until_year() {
+        assert!(Line::new("Zone X 0 - LMT min").is_err());
+        assert!(Line::new("Zone X 0 - LMT minimum").is_err());
+        assert!(Line::new("Zone X 0 - LMT max").is_err());
+        assert!(Line::new("Zone X 0 - LMT maximum").is_err());
+    }
+
+    #[test]
+    fn time_spec_rejects_malformed_signs_and_ranges() {
+        for bad in ["-1:-9", "-0:+1", "--1:00", "0:60", "0:00:60", "0:99:99", "+1:00", "1:00:00:00"] {
+            assert!(
+                TimeSpec::from_str(bad).is_err(),
+                "expected TimeSpec error for {bad:?}"
+            );
+        }
+        assert_eq!(
+            TimeSpec::from_str("-0:01:15"),
+            Ok(TimeSpec::HoursMinutesSeconds(0, -1, -15))
+        );
+    }
+
+    #[test]
+    fn rule_inline_comment_breaks() {
+        assert_eq!(
+            Rule::from_str("Rule EU 1977 1980 - Apr Sun>=1 1:00u 1:00 # S"),
+            Err(Error::NotParsedAsRuleLine)
+        );
+        assert_eq!(
+            Rule::from_str("Rule EU 1977 1980 - Apr Sun>=1 1:00u 1:00 S # 1:00"),
+            Ok(Rule {
+                name: "EU",
+                from_year: Year::Number(1977),
+                to_year: Some(Year::Number(1980)),
+                month: Month::April,
+                day: DaySpec::FirstOnOrAfter(Weekday::Sunday, 1),
+                time: TimeSpec::HoursMinutes(1, 0).with_type(TimeType::UTC),
+                time_to_add: TimeSpec::HoursMinutes(1, 0),
+                letters: Some("S"),
+            })
+        );
     }
 }
