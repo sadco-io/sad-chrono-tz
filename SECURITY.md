@@ -2,11 +2,12 @@
 
 ## Supported Versions
 
-| Crate | Supported Versions | Unsupported Versions | Notes |
-|---|---|---|---|
-| `sad-chrono-tz` | `>= 0.10.5` (`0.10.x`) | `< 0.10.5` | Targets `sad-chrono` `0.4` (`0.4.48+`), MSRV `1.66.0` (`defmt` feature requires Rust `1.81+`), API-compatible for the verified runtime surface of `chrono-tz` `0.10.4` with IANA tzdb `2026f`. |
-| `sad-chrono-tz-build` | `>= 0.5.1` (`0.5.x`) | `< 0.5.1` | Build-time codegen for `sad-chrono-tz 0.10.x` (MSRV `1.66.0`). |
-| `sad-parse-zoneinfo` | `>= 0.5.1` (`0.5.x`) | `< 0.5.1` | Textual zoneinfo parser and bounded transition builder (MSRV `1.66.0`). |
+| Crate | Release Line | Supported Versions | Unsupported Versions | Notes |
+|---|---|---|---|---|
+| `sad-chrono-tz` | `0.11.x` (`main`) | `>= 0.11.0` | `< 0.10.5` | Targets `sad-chrono` `0.5` (`0.5.1+`), MSRV `1.85.0`, `phf 0.14`, `defmt 1.2`, `ParseError: core::error::Error` independent of `std`, API-compatible for the verified runtime surface of `chrono-tz` `0.10.4` with IANA tzdb `2026f`. |
+| `sad-chrono-tz` | `0.10.x` | `>= 0.10.5, < 0.11.0` | `< 0.10.5` | Security and tzdb fixes only; targets `sad-chrono` `0.4` (`0.4.48+`), MSRV `1.66.0` (`defmt` feature requires Rust `1.81+`), `phf 0.13`. |
+| `sad-chrono-tz-build` | `0.6.x` / `0.5.x` | `>= 0.6.0` (`0.6.x`), `>= 0.5.1` (`0.5.x`) | `< 0.5.1` | Build-time codegen for `sad-chrono-tz 0.11.x` (MSRV `1.85.0`) and `0.10.x` (MSRV `1.66.0`). |
+| `sad-parse-zoneinfo` | `0.6.x` / `0.5.x` | `>= 0.6.0` (`0.6.x`), `>= 0.5.1` (`0.5.x`) | `< 0.5.1` | Textual zoneinfo parser and bounded transition builder (MSRV `1.85.0` on `0.6.x`, `1.66.0` on `0.5.x`). |
 
 ## Scope and Exposure Boundaries
 

@@ -92,8 +92,21 @@ This fork includes the following changes relative to `chrono-tz` 0.10.4 /
     `sad-parse-zoneinfo` (`0.5.1`, library `sad_parse_zoneinfo`)
   - Real `LICENSE-MIT` and `LICENSE-APACHE` files replacing symlinks
 
+In `sad-chrono-tz` 0.11.0 / `sad-chrono-tz-build` 0.6.0 / `sad-parse-zoneinfo`
+0.6.0, the following additional modifications were made:
+
+- Upgraded target dependency to `sad-chrono 0.5` (`0.5.1+`), updated `phf`,
+  `phf_codegen`, and `phf_shared` to `0.14`, `defmt` to `1.2`, and `arbitrary`
+  to `1.4+`, and raised the MSRV to Rust `1.85.0` across all three crates
+- Implemented `core::error::Error` for `ParseError` independently of `std` so
+  `#![no_std]` callers receive `Error` without enabling `std`, while `std`
+  still controls `#![cfg_attr(not(any(feature = "std", test)), no_std)]`
+- Regenerated `chrono-tz/src/prebuilt/{directory,timezones}.rs` with
+  `phf_codegen 0.14` and the updated `core::error::Error` impl while keeping
+  `chrono-tz 0.10.4`'s verified runtime API surface and IANA tzdb `2026f`
+
 The upstream fixes listed above were written by their upstream authors; see
-https://github.com/sadco-io/sad-chrono-tz/blob/v0.10.5/CHANGELOG.md for
+https://github.com/sadco-io/sad-chrono-tz/blob/v0.11.0/CHANGELOG.md for
 attribution of each change. The packaging changes and the Sadco Security Team
 fixes listed above were developed by the Sadco Security Team with assistance
 from AI coding tools (Anthropic Claude, Google Gemini).

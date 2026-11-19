@@ -45,22 +45,10 @@ jobs:
           submodules: true
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
-          toolchain: stable
-      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
-        with:
-          toolchain: "1.66.0"
+          toolchain: "1.85.0"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      # Cargo < 1.84 has no MSRV-aware resolver; generate a v3 lockfile pinned to
-      # Rust 1.66-compatible versions (e.g. getrandom 0.3, arbitrary 1.4, syn 2.0.48).
-      # `defmt >= 1.0` requires Rust 1.81+ (via defmt-parser -> thiserror 2), so check
-      # all MSRV-compatible features explicitly instead of `--all-features`.
-      - run: |
-          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +stable generate-lockfile
-          grep -q '^version = 3$' Cargo.lock
-      - run: cargo +1.66.0 check --locked --workspace --lib
-      - run: cargo +1.66.0 check --locked -p sad-chrono-tz --lib --features std,serde,filter-by-regex,case-insensitive,arbitrary
-      - run: cargo +1.66.0 check --locked -p sad-chrono-tz-build --lib --all-features
-      - run: cargo +1.66.0 check --locked -p sad-parse-zoneinfo --lib --all-features
+      - run: cargo check --workspace --lib
+      - run: cargo check --workspace --lib --all-features
 
   rust_versions:
     strategy:

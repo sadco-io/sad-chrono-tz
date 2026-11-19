@@ -5,6 +5,47 @@ ChangeLog for sad-chrono-tz
 [chrono-tz](https://github.com/chronotope/chrono-tz). Entries reference the
 upstream pull request or issue each change came from as `chrono-tz#NNNN`.
 
+## sad-chrono-tz 0.11.0 / sad-chrono-tz-build 0.6.0 / sad-parse-zoneinfo 0.6.0
+
+Current release line targeting `sad-chrono = "0.5.1"` (`0.5.1+`) with MSRV
+`1.85.0`. API-compatible with `chrono-tz 0.10.4` for the verified runtime
+signatures and supported feature configurations (`Default for Tz` is implemented
+when `UTC` is included in the compiled zone set, `OffsetName::abbreviation()`
+returns `None` for `%z`-derived numeric offsets, `Tz` exposes all 597 IANA
+`2026f` variants, and `CHRONO_TZ_TIMEZONE_FILTER` selects zones whose names
+match the regex — whole-name matching requires anchors such as `^...$`, and an
+unset or blank filter leaves all zones enabled; in `sad-parse-zoneinfo 0.6.0`,
+public `Format::format` takes three arguments — `utc_offset`, `dst_offset`,
+`letters` — matching `chrono-tz#211` / `parse-zoneinfo 0.5.0`, whereas
+upstream `parse-zoneinfo 0.4.0` took two).
+
+> **Note:** `sad-chrono-tz 0.11.0` pairs `chrono-tz 0.10`'s verified runtime
+> API with `sad-chrono 0.5.1+` and current dependencies. It is **not**
+> upstream's unreleased `chrono-tz 0.11` breaking API.
+
+### Breaking dependency & MSRV upgrades
+
+* Target **`sad-chrono = "0.5.1"`** (`0.5.1+`) instead of `sad-chrono 0.4`.
+* Bump MSRV (`rust-version`) from `1.66.0` to **`1.85.0`** across
+  `sad-chrono-tz`, `sad-chrono-tz-build`, and `sad-parse-zoneinfo`.
+* Upgrade `phf`, `phf_codegen`, and `phf_shared` from `0.13` to **`0.14`** and
+  regenerate `chrono-tz/src/prebuilt/{directory,timezones}.rs`.
+* Upgrade `defmt` requirement from `1.0.1` to **`1.2`** (matching `sad-chrono
+  0.5.1`) and add `defmt` feature coverage to `check-nostd`.
+* Upgrade `arbitrary` requirement from `1.2` to **`1.4`** (resolving to `1.5.0`
+  cleanly on Rust `1.85.0`).
+* Update `sad-chrono-tz-build` and `sad-parse-zoneinfo` to `0.6.0`.
+
+### `#![no_std]` improvements
+
+* Implement `core::error::Error` for `ParseError` independently of `std` (Rust
+  `1.81+`), so `#![no_std]` callers (`default-features = false`) receive
+  `Error` without enabling `std`.
+* Keep `std = []` (and `default = ["std"]`): the `std` feature still controls
+  the crate's `#![cfg_attr(not(any(feature = "std", test)), no_std)]` attribute
+  in `chrono-tz/src/lib.rs`, preserving compatibility with downstream feature
+  lists.
+
 ## sad-chrono-tz 0.10.5 / sad-chrono-tz-build 0.5.1 / sad-parse-zoneinfo 0.5.1
 
 Initial `sadco-io` release, API-compatible with `chrono-tz 0.10.4` for the
