@@ -174,7 +174,7 @@ impl RuleInfo {
                     TimeType::Wall => utc_offset as i128 + dst_offset as i128,
                 };
                 let changetime = ChangeTime::UntilDay(Year::Number(year), self.month, self.day);
-                changetime.to_timestamp(0, 0) as i128 + self.time as i128 - offset
+                changetime.to_timestamp_unclamped_i128(0, 0) + self.time as i128 - offset
             }
         };
         ts.clamp(i64::MIN as i128, i64::MAX as i128) as i64
@@ -241,6 +241,9 @@ pub enum Saving {
     Multiple(String),
 }
 
+/// Maximum byte length permitted for a timezone abbreviation format template.
+pub const MAX_FORMAT_TEMPLATE_LEN: usize = 256;
+
 /// The format string to generate a time zone abbreviation from.
 #[non_exhaustive]
 #[derive(PartialEq, Debug, Clone)]
@@ -291,14 +294,12 @@ impl Format {
         matches!(*self, Format::Offset)
     }
 
-    /// Formats the timezone abbreviation if the resulting byte length does not
-    /// exceed `max_len`, returning `None` if it would exceed `max_len` without
-    /// allocating an oversized buffer.
-    pub fn try_format(
+    fn format_inner(
         &self,
         utc_offset: i64,
         dst_offset: i64,
         letters: Option<&String>,
+        max_template_len: usize,
         max_len: usize,
     ) -> Option<String> {
         let letters = match letters {
@@ -307,8 +308,16 @@ impl Format {
         };
 
         match *self {
-            Format::Constant(ref s) => (s.len() <= max_len).then(|| s.clone()),
+            Format::Constant(ref s) => {
+                (s.len() <= max_template_len && s.len() <= max_len).then(|| s.clone())
+            }
             Format::Placeholder(ref s) => {
+                if s.len() > max_template_len {
+                    return None;
+                }
+                if letters.len() > max_len && s.contains("%s") {
+                    return None;
+                }
                 let matches = s.matches("%s").count();
                 let out_len = s
                     .len()
@@ -326,10 +335,16 @@ impl Format {
                 }
                 Some(out)
             }
-            Format::Alternate { ref standard, .. } if dst_offset == 0 => {
-                (standard.len() <= max_len).then(|| standard.clone())
+            Format::Alternate {
+                ref standard,
+                ref dst,
+            } => {
+                if standard.len() > max_template_len || dst.len() > max_template_len {
+                    return None;
+                }
+                let chosen = if dst_offset == 0 { standard } else { dst };
+                (chosen.len() <= max_len).then(|| chosen.clone())
             }
-            Format::Alternate { ref dst, .. } => (dst.len() <= max_len).then(|| dst.clone()),
             Format::Offset => {
                 let offset = utc_offset as i128 + dst_offset as i128;
                 let sign = if offset < 0 { '-' } else { '+' };
@@ -353,8 +368,28 @@ impl Format {
         }
     }
 
+    /// Formats the timezone abbreviation if the input template does not exceed
+    /// [`MAX_FORMAT_TEMPLATE_LEN`] and the resulting byte length does not
+    /// exceed `max_len`, returning `None` before allocating or scanning oversized
+    /// inputs.
+    pub fn try_format(
+        &self,
+        utc_offset: i64,
+        dst_offset: i64,
+        letters: Option<&String>,
+        max_len: usize,
+    ) -> Option<String> {
+        self.format_inner(
+            utc_offset,
+            dst_offset,
+            letters,
+            MAX_FORMAT_TEMPLATE_LEN,
+            max_len,
+        )
+    }
+
     pub fn format(&self, utc_offset: i64, dst_offset: i64, letters: Option<&String>) -> String {
-        self.try_format(utc_offset, dst_offset, letters, usize::MAX)
+        self.format_inner(utc_offset, dst_offset, letters, usize::MAX, usize::MAX)
             .expect("unbounded format length")
     }
 
@@ -684,6 +719,32 @@ mod tests {
             rule_wall.absolute_datetime(292_277_026_597, 3600, -7200),
             i64::MAX
         );
+
+        // Fallback path (invalid ordinal Feb 29 in non-leap extreme year 292_277_026_597):
+        // must compute unclamped in i128 and clamp once after subtracting offset.
+        let feb29_fallback = RuleInfo {
+            from_year: Year::Minimum,
+            to_year: Some(Year::Maximum),
+            month: Month::February,
+            day: DaySpec::Ordinal(29),
+            time: 0,
+            time_type: TimeType::Standard,
+            time_to_add: 0,
+            letters: None,
+        };
+        let feb28 = ChangeTime::UntilDay(
+            Year::Number(292_277_026_597),
+            Month::February,
+            DaySpec::Ordinal(28),
+        )
+        .try_to_timestamp_i128(0, 0)
+        .unwrap();
+        assert!(feb28 > i64::MAX as i128);
+        let feb_delta = (feb28 - i64::MAX as i128) as i64 + 100;
+        assert_eq!(
+            feb29_fallback.absolute_datetime(292_277_026_597, feb_delta, 0),
+            i64::MAX - 100
+        );
     }
 
     #[test]
@@ -705,6 +766,15 @@ mod tests {
             Format::new("A%sB").try_format(0, 0, Some(&"S".to_owned()), 64),
             Some("ASB".to_owned())
         );
+
+        // Template exceeding MAX_FORMAT_TEMPLATE_LEN is rejected even with large max_len.
+        let oversized_template = Format::new(&"%s".repeat(MAX_FORMAT_TEMPLATE_LEN));
+        assert_eq!(
+            oversized_template.try_format(0, 0, Some(&"S".to_owned()), usize::MAX),
+            None
+        );
+        let oversized_const = Format::new(&"A".repeat(MAX_FORMAT_TEMPLATE_LEN + 1));
+        assert_eq!(oversized_const.try_format(0, 0, None, usize::MAX), None);
     }
 
     #[test]

@@ -112,6 +112,12 @@ pub const MAX_RULES_PER_RULESET: usize = 4_096;
 /// Maximum number of rules permitted to apply to a single calendar year.
 pub const MAX_ACTIVE_RULES_PER_YEAR: usize = 256;
 
+/// Maximum number of continuation segments permitted in a single zone definition.
+pub const MAX_ZONE_SEGMENTS: usize = 1_024;
+
+/// Maximum cumulative rule-evaluation steps permitted when generating a single zone.
+pub const MAX_RULE_EVALUATIONS_PER_ZONE: usize = 500_000;
+
 /// Maximum number of transitions permitted in a single timezone's generated table.
 pub const MAX_TRANSITIONS_PER_ZONE: usize = 10_000;
 
@@ -126,6 +132,8 @@ pub enum TransitionError {
     ZoneNotFound,
     /// The timezone's zoneset contained no segments.
     EmptyZoneset,
+    /// The timezone's zoneset exceeded [`MAX_ZONE_SEGMENTS`].
+    TooManySegments { count: usize, limit: usize },
     /// A zone segment referenced an undefined ruleset.
     UnknownRuleset(String),
     /// A non-final zone segment was missing an `UNTIL` timestamp.
@@ -134,6 +142,8 @@ pub enum TransitionError {
     UnexpectedTerminalUntil,
     /// A zone segment's `UNTIL` timestamp did not strictly increase over the previous segment.
     NonIncreasingUntil { previous: i64, current: i64 },
+    /// A zone segment's `UNTIL` timestamp exceeded `i64` Unix-second bounds.
+    TimestampOutOfRange,
     /// A zone or rule date was invalid for its month/year (e.g. Feb 29 in a common year).
     InvalidDate(line::Error),
     /// A ruleset exceeded [`MAX_RULES_PER_RULESET`].
@@ -144,6 +154,8 @@ pub enum TransitionError {
         count: usize,
         limit: usize,
     },
+    /// Cumulative rule evaluation work exceeded [`MAX_RULE_EVALUATIONS_PER_ZONE`].
+    WorkBudgetExceeded { limit: usize },
     /// Too many transitions were generated for one zone ([`MAX_TRANSITIONS_PER_ZONE`]).
     TooManyTransitions { limit: usize },
     /// A formatted timezone abbreviation exceeded [`MAX_FORMATTED_NAME_LEN`].
@@ -157,6 +169,9 @@ impl fmt::Display for TransitionError {
         match self {
             TransitionError::ZoneNotFound => write!(f, "timezone not found or broken/cyclic link"),
             TransitionError::EmptyZoneset => write!(f, "zoneset has no segments"),
+            TransitionError::TooManySegments { count, limit } => {
+                write!(f, "zoneset has {count} segments, exceeding limit of {limit}")
+            }
             TransitionError::UnknownRuleset(name) => write!(f, "unknown ruleset `{name}`"),
             TransitionError::MissingUntil => write!(f, "non-final zone segment missing UNTIL"),
             TransitionError::UnexpectedTerminalUntil => {
@@ -166,6 +181,9 @@ impl fmt::Display for TransitionError {
                 f,
                 "zone UNTIL timestamp ({current}) must be strictly greater than previous ({previous})"
             ),
+            TransitionError::TimestampOutOfRange => {
+                write!(f, "zone UNTIL timestamp is outside i64 range")
+            }
             TransitionError::InvalidDate(err) => write!(f, "invalid calendar date: {err}"),
             TransitionError::TooManyRules { count, limit } => {
                 write!(f, "ruleset has {count} rules, exceeding limit of {limit}")
@@ -174,6 +192,9 @@ impl fmt::Display for TransitionError {
                 f,
                 "year {year} has {count} active rules, exceeding limit of {limit}"
             ),
+            TransitionError::WorkBudgetExceeded { limit } => {
+                write!(f, "zone exceeded rule evaluation work budget of {limit}")
+            }
             TransitionError::TooManyTransitions { limit } => {
                 write!(f, "zone exceeded limit of {limit} transitions")
             }
@@ -309,8 +330,15 @@ impl Table {
         if zoneset.is_empty() {
             return Err(TransitionError::EmptyZoneset);
         }
+        if zoneset.len() > MAX_ZONE_SEGMENTS {
+            return Err(TransitionError::TooManySegments {
+                count: zoneset.len(),
+                limit: MAX_ZONE_SEGMENTS,
+            });
+        }
 
         for (i, zone_info) in zoneset.iter().enumerate() {
+            builder.consume_work(1)?;
             let mut dst_offset = 0;
             let use_until = i != zoneset.len() - 1;
             let utc_offset = zone_info.offset;
@@ -379,17 +407,22 @@ impl Table {
 
             if use_until {
                 let end_time = zone_info.end_time.ok_or(TransitionError::MissingUntil)?;
-                let next_start = end_time
-                    .try_to_timestamp(utc_offset, dst_offset)
+                let next_start_i128 = end_time
+                    .try_to_timestamp_i128(utc_offset, dst_offset)
                     .map_err(TransitionError::InvalidDate)?;
-                if let Some(prev_start) = builder.start_time {
-                    if next_start <= prev_start {
+                if let Some(prev_start_i128) = builder.start_time_i128 {
+                    if next_start_i128 <= prev_start_i128 {
                         return Err(TransitionError::NonIncreasingUntil {
-                            previous: prev_start,
-                            current: next_start,
+                            previous: prev_start_i128.clamp(i64::MIN as i128, i64::MAX as i128)
+                                as i64,
+                            current: next_start_i128.clamp(i64::MIN as i128, i64::MAX as i128)
+                                as i64,
                         });
                     }
                 }
+                let next_start = i64::try_from(next_start_i128)
+                    .map_err(|_| TransitionError::TimestampOutOfRange)?;
+                builder.start_time_i128 = Some(next_start_i128);
                 builder.start_time = Some(next_start);
             } else if zone_info.end_time.is_some() {
                 return Err(TransitionError::UnexpectedTerminalUntil);
@@ -465,10 +498,22 @@ struct FixedTimespanSetBuilder {
     rest: Vec<(i64, InternalTimespan)>,
 
     start_time: Option<i64>,
-    until_time: Option<i64>,
+    start_time_i128: Option<i128>,
+    until_time_i128: Option<i128>,
+    work_steps: usize,
 }
 
 impl FixedTimespanSetBuilder {
+    fn consume_work(&mut self, steps: usize) -> Result<(), TransitionError> {
+        self.work_steps = self.work_steps.saturating_add(steps);
+        if self.work_steps > MAX_RULE_EVALUATIONS_PER_ZONE {
+            return Err(TransitionError::WorkBudgetExceeded {
+                limit: MAX_RULE_EVALUATIONS_PER_ZONE,
+            });
+        }
+        Ok(())
+    }
+
     fn push_transition(&mut self, at: i64, span: InternalTimespan) -> Result<(), TransitionError> {
         if self.rest.len() >= MAX_TRANSITIONS_PER_ZONE {
             return Err(TransitionError::TooManyTransitions {
@@ -556,8 +601,10 @@ impl FixedTimespanSetBuilder {
         }
 
         for year in 1800..=max_year {
+            self.consume_work(1)?;
             let mut activated_rules = Vec::new();
             for rule in rules {
+                self.consume_work(1)?;
                 if !rule.applies_to_year(year) {
                     continue;
                 }
@@ -581,9 +628,9 @@ impl FixedTimespanSetBuilder {
             if activated_rules.is_empty() {
                 if let Some(end_time) = end_time {
                     let ts = end_time
-                        .try_to_timestamp(utc_offset, *dst_offset)
+                        .try_to_timestamp_i128(utc_offset, *dst_offset)
                         .map_err(TransitionError::InvalidDate)?;
-                    self.until_time = Some(ts);
+                    self.until_time_i128 = Some(ts);
                 }
                 continue;
             }
@@ -591,14 +638,16 @@ impl FixedTimespanSetBuilder {
             loop {
                 if let Some(end_time) = end_time {
                     let ts = end_time
-                        .try_to_timestamp(utc_offset, *dst_offset)
+                        .try_to_timestamp_i128(utc_offset, *dst_offset)
                         .map_err(TransitionError::InvalidDate)?;
-                    self.until_time = Some(ts);
+                    self.until_time_i128 = Some(ts);
                 }
+
+                self.consume_work(activated_rules.len())?;
 
                 // Find the minimum unused rule and its start time based on the current
                 // UTC and DST offsets. Wall-time rules depend on `dst_offset`.
-                let mut earliest: Option<(usize, i64)> = None;
+                let mut earliest: Option<(usize, i128)> = None;
                 for (i, active) in activated_rules.iter().enumerate() {
                     if active.used {
                         continue;
@@ -608,13 +657,12 @@ impl FixedTimespanSetBuilder {
                     } else {
                         active.base_ts
                     };
-                    let ts = ts_i128.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
-                    if earliest.map_or(true, |(_, best)| ts < best) {
-                        earliest = Some((i, ts));
+                    if earliest.map_or(true, |(_, best)| ts_i128 < best) {
+                        earliest = Some((i, ts_i128));
                     }
                 }
 
-                let (pos, earliest_at) = match earliest {
+                let (pos, earliest_at_i128) = match earliest {
                     Some(pair) => pair,
                     None => break,
                 };
@@ -622,11 +670,14 @@ impl FixedTimespanSetBuilder {
                 activated_rules[pos].used = true;
                 let earliest_rule = activated_rules[pos].rule;
 
-                if let Some(until_time) = self.until_time {
-                    if use_until && earliest_at >= until_time {
+                if let Some(until_time_i128) = self.until_time_i128 {
+                    if use_until && earliest_at_i128 >= until_time_i128 {
                         break;
                     }
                 }
+
+                let earliest_at = i64::try_from(earliest_at_i128)
+                    .map_err(|_| TransitionError::TimestampOutOfRange)?;
 
                 *dst_offset = earliest_rule.time_to_add;
 
@@ -1070,6 +1121,67 @@ mod test {
                 limit: MAX_FORMATTED_NAME_LEN
             })
         );
+
+        // 4. Too many segments (> MAX_ZONE_SEGMENTS)
+        let mut table4 = Table::default();
+        let mut segs: Vec<ZoneInfo> = (0..=MAX_ZONE_SEGMENTS)
+            .map(|i| ZoneInfo {
+                offset: 0,
+                saving: Saving::NoSaving,
+                format: Format::new("T"),
+                end_time: Some(ChangeTime::UntilYear(Year::Number(1900 + i as i64))),
+            })
+            .collect();
+        segs.last_mut().unwrap().end_time = None;
+        table4.zonesets.insert("Test/ManySegs".to_owned(), segs);
+        assert_eq!(
+            table4.try_timespans("Test/ManySegs"),
+            Err(TransitionError::TooManySegments {
+                count: MAX_ZONE_SEGMENTS + 1,
+                limit: MAX_ZONE_SEGMENTS,
+            })
+        );
+
+        // 5. High-rule, zero-emission adversarial zone hits cumulative work budget
+        let mut table5 = Table::default();
+        let non_matching_rules: Vec<RuleInfo> = (0..1_000)
+            .map(|i| RuleInfo {
+                from_year: Year::Number(1700),
+                to_year: Some(Year::Number(1700 + (i % 10))),
+                month: Month::January,
+                day: DaySpec::Ordinal(1),
+                time: 0,
+                time_type: TimeType::UTC,
+                time_to_add: 0,
+                letters: None,
+            })
+            .collect();
+        table5
+            .rulesets
+            .insert("Dormant".to_owned(), non_matching_rules);
+        let mut dormant_segs: Vec<ZoneInfo> = (0..5)
+            .map(|i| ZoneInfo {
+                offset: 0,
+                saving: Saving::Multiple("Dormant".to_owned()),
+                format: Format::new("D"),
+                end_time: Some(ChangeTime::UntilYear(Year::Number(2000 + i))),
+            })
+            .collect();
+        dormant_segs.push(ZoneInfo {
+            offset: 0,
+            saving: Saving::NoSaving,
+            format: Format::new("D"),
+            end_time: None,
+        });
+        table5
+            .zonesets
+            .insert("Test/DormantWork".to_owned(), dormant_segs);
+        assert_eq!(
+            table5.try_timespans("Test/DormantWork"),
+            Err(TransitionError::WorkBudgetExceeded {
+                limit: MAX_RULE_EVALUATIONS_PER_ZONE
+            })
+        );
     }
 
     #[test]
@@ -1118,6 +1230,70 @@ mod test {
             table.try_timespans("OutOfOrder"),
             Err(TransitionError::NonIncreasingUntil { .. })
         ));
+
+        // Two distinct extreme UNTIL years exceeding i64::MAX are rejected cleanly
+        // with TimestampOutOfRange (and non-increasing extreme UNTIL values are distinguished in i128).
+        table.zonesets.insert(
+            "ExtremeIncreasing".to_owned(),
+            vec![
+                ZoneInfo {
+                    offset: 0,
+                    saving: Saving::NoSaving,
+                    format: Format::new("A"),
+                    end_time: Some(ChangeTime::UntilYear(Year::Number(300_000_000_000))),
+                },
+                ZoneInfo {
+                    offset: 3600,
+                    saving: Saving::NoSaving,
+                    format: Format::new("B"),
+                    end_time: Some(ChangeTime::UntilYear(Year::Number(400_000_000_000))),
+                },
+                ZoneInfo {
+                    offset: 7200,
+                    saving: Saving::NoSaving,
+                    format: Format::new("C"),
+                    end_time: None,
+                },
+            ],
+        );
+        assert_eq!(
+            table.try_timespans("ExtremeIncreasing"),
+            Err(TransitionError::TimestampOutOfRange)
+        );
+
+        // First segment at top of i64 range, second segment strictly larger (> i64::MAX):
+        // must report TimestampOutOfRange rather than falsely reporting NonIncreasingUntil.
+        table.zonesets.insert(
+            "BorderToOutOfRange".to_owned(),
+            vec![
+                ZoneInfo {
+                    offset: 0,
+                    saving: Saving::NoSaving,
+                    format: Format::new("A"),
+                    end_time: Some(ChangeTime::UntilDay(
+                        Year::Number(292_277_026_596),
+                        Month::January,
+                        DaySpec::Ordinal(1),
+                    )),
+                },
+                ZoneInfo {
+                    offset: 3600,
+                    saving: Saving::NoSaving,
+                    format: Format::new("B"),
+                    end_time: Some(ChangeTime::UntilYear(Year::Number(292_277_026_597))),
+                },
+                ZoneInfo {
+                    offset: 7200,
+                    saving: Saving::NoSaving,
+                    format: Format::new("C"),
+                    end_time: None,
+                },
+            ],
+        );
+        assert_eq!(
+            table.try_timespans("BorderToOutOfRange"),
+            Err(TransitionError::TimestampOutOfRange)
+        );
 
         // Multi-year rule hitting Feb 29 in a non-leap year rejected
         table.rulesets.insert(

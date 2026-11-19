@@ -16,8 +16,10 @@ This policy covers all three crates in the workspace, with distinct threat model
   `Tz::from_str_insensitive`, `serde::Deserialize`) or dates/timestamps (`TimeZone`, `Offset`, and
   `GapInfo` lookups against precompiled or regex-filtered tables).
 - **`sad-chrono-tz-build`** (build-time): Exposure requires control over the
-  `CHRONO_TZ_TIMEZONE_FILTER` environment variable or custom/replaced `tz/` zoneinfo inputs; invalid
-  inputs fail code generation cleanly without writing partial output.
+  `CHRONO_TZ_TIMEZONE_FILTER` environment variable or custom/replaced `tz/` zoneinfo inputs;
+  validation errors detected before writing starts fail code generation cleanly without writing
+  output files (output files are written sequentially, so an I/O error during writing can leave one
+  file updated).
 - **`sad-parse-zoneinfo`** (parser): Direct callers may pass untrusted zoneinfo text (`Line::new`,
   `TableBuilder`) and compute transition tables (`Table::try_timespans`,
   `TableTransitions::timespans`).

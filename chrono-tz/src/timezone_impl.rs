@@ -79,6 +79,8 @@ pub struct TzOffset {
 /// in effect (such as DST) at a given time.
 ///
 /// ```
+/// # #[cfg(not(feature = "filter-by-regex"))]
+/// # {
 /// use sad_chrono::{Duration, Offset, TimeZone};
 /// use sad_chrono_tz::Europe::London;
 /// use sad_chrono_tz::OffsetComponents;
@@ -96,6 +98,7 @@ pub struct TzOffset {
 /// // As a sanity check, make sure that the total offsets added together are equivalent to the
 /// // total fixed offset.
 /// assert_eq!(total_offset.num_seconds(), london_time.offset().fix().local_minus_utc() as i64);
+/// # }
 /// ```
 pub trait OffsetComponents {
     /// The base offset from UTC; this usually doesn't change unless the government changes something
@@ -110,6 +113,8 @@ pub trait OffsetComponents {
 /// various situations.
 ///
 /// ```
+/// # #[cfg(not(feature = "filter-by-regex"))]
+/// # {
 /// use sad_chrono::TimeZone;
 /// use sad_chrono_tz::Europe::London;
 /// use sad_chrono_tz::OffsetName;
@@ -124,6 +129,7 @@ pub trait OffsetComponents {
 /// assert_eq!(london_summer_time.offset().tz_id(), "Europe/London");
 /// // During the summer, this becomes British Summer Time
 /// assert_eq!(london_summer_time.offset().abbreviation(), Some("BST"));
+/// # }
 /// ```
 pub trait OffsetName {
     /// The IANA TZDB identifier (ex: America/New_York)

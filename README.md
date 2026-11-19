@@ -106,31 +106,35 @@ and supported feature configurations targeting `sad-chrono 0.4` (`0.4.48+`):
   (`America/Edmonton`), British Columbia (`America/Vancouver`), Northwest Territories
   (`America/Inuvik`), Morocco & Western Sahara (`Africa/Casablanca`, `Africa/El_Aaiun`), Moldova
   (`Europe/Chisinau`), and POSIX `USback` rules (`EST5EDT`, `CST6CDT`, `MST7MDT`, `PST8PDT`).
-* **Upstream improvements included**: `%z` formatting in `sad-parse-zoneinfo` (`0.5.1`), link
-  deduplication in `sad-chrono-tz-build`, `CHRONO_TZ_TIMEZONE_FILTER` exact-match regex filtering
-  (`chrono-tz#218`, no longer pulling in unrelated `Etc/GMT*`/`UTC` zones), `serde_core` dependency
-  (`serde` feature), `phf 0.13`, MSRV `1.66.0`, and optional `defmt` (`1.0.1`, Rust `1.81+`).
+* **Upstream improvements included**: `%z` formatting in `sad-parse-zoneinfo` (`0.5.1`, where
+  `Format::format` takes three arguments as in `chrono-tz#211` / `parse-zoneinfo 0.5.0` vs two in
+  `0.4.0`), link deduplication in `sad-chrono-tz-build`, `CHRONO_TZ_TIMEZONE_FILTER` regex filtering
+  selecting only zones whose names match the regex (`chrono-tz#218`, no longer pulling in unrelated
+  `Etc/GMT*`/`UTC` zones; use anchors such as `^...$` for whole-name matching, and an unset or
+  blank value leaves all zones enabled), `serde_core` dependency (`serde` feature), `phf 0.13`, MSRV
+  `1.66.0`, and optional `defmt` (`1.0.1`, Rust `1.81+`).
 * **Packaging**: Symlinked `LICENSE` files replaced with real `LICENSE-MIT` and `LICENSE-APACHE`
   files (`sad-chrono-tz` and `sad-chrono-tz-build` carry `MIT` and `Apache-2.0` texts;
   `sad-parse-zoneinfo` carries `MIT`).
 * **Environment variable**: When `filter-by-regex` is enabled, `CHRONO_TZ_TIMEZONE_FILTER` selects
-  only zones matching the regex (no implicit `UTC`/`Etc/GMT*` inclusion) and fails the build cleanly
-  if zero zones match.
+  only zones whose names match the regex (use anchors such as `^...$` for whole-name matching; an
+  unset or blank value leaves all zones enabled), with no implicit `UTC`/`Etc/GMT*` inclusion, and
+  fails the build cleanly if zero zones match.
 
 ## Security and Robustness Fixes
 
 | Crate | Issue Class | Upstream Behavior | `sad-chrono-tz` Fix |
 |---|---|---|---|
 | `sad-parse-zoneinfo` | Large year CPU DoS & `i64` overflow | `O(\|year - 1970\|)` loop in `ChangeTime::to_timestamp` hangs on extreme years | Constant-time `i128` Gregorian calculation clamping `ChangeTime::to_timestamp()` once to `i64` |
-| `sad-parse-zoneinfo` | Day tokens & invalid calendar dates | Unchecked empty strings, `u8 as i8` wraps, and silent `Feb 29` -> `Mar 1` spillover | Day tokens enforce `1..=31` (`InvalidDaySpec` / `FailedWeekdayParse`); ordinal dates validated against month/leap-year in `try_to_concrete_day` and transitions while keeping weekday spillover |
+| `sad-parse-zoneinfo` | Day tokens & invalid calendar dates | Unchecked empty strings, `u8 as i8` wraps, and silent `Feb 29` -> `Mar 1` spillover | Day tokens enforce `1..=31`; ordinal dates and `weekday<=`/`>=` anchors validated against month/leap-year (`zic`-aligned `Feb weekday<=29` common-year normalization) while keeping valid spillover |
 | `sad-parse-zoneinfo` | `DaySpec` boundary & `Weekday` panics | `.unwrap()` panic at Jan/Dec boundaries and `% 7` panic on negative years | Checked `i16`/`i128` year-boundary resolution and `i128` Euclidean arithmetic |
-| `sad-parse-zoneinfo` | `Year::Minimum`/`Maximum` panics | `unreachable!()` panics in `ChangeTime` and `RuleInfo::applies_to_year` | Symbolic `Zone` `UNTIL` years return `FailedYearParse`; handled in `RuleInfo`/`ChangeTime` |
+| `sad-parse-zoneinfo` | `Year::Minimum`/`Maximum` panics | `unreachable!()` panics in `ChangeTime` and `RuleInfo::applies_to_year` | Symbolic `Zone` `UNTIL` years return `FailedYearParse`; handled in `RuleInfo`/`ChangeTime` with single-clamp `i128` `absolute_datetime` fallback |
 | `sad-parse-zoneinfo` | Malformed `TimeSpec` signs & ranges | Accepted mixed sign combos and minutes/seconds `>= 60` | Leading `+`/`-` allowed on hours; mixed component signs and mins/secs `>= 60` return `InvalidTimeSpecAndType` |
 | `sad-parse-zoneinfo` | Broken / cyclic / chained link & collisions | Unchecked map indexing panicked on broken or chained links; zone/link overlap | Iterative cycle-safe `Table::get_zoneset` returning `None` on broken/cyclic links; `TableBuilder` rejects zone/link collisions |
 | `sad-parse-zoneinfo` | `%z` fractional-minute & overflow panics | `assert!(secs == 0)`, `-i64::MIN` overflow, and `u8` hour truncation | `i128` `unsigned_abs()` formatting supporting seconds and unbounded hours; `try_format_constant` added (`format_constant` documents `# Panics`) |
-| `sad-parse-zoneinfo` | Unbounded rules/transitions, `%s` expansion, `UNTIL` | `O(R^2)` per-year rule scans, unbounded `%s` expansion, ignored terminal/non-monotonic `UNTIL` | Bounded `try_timespans` / `timespans` caps (`4_096` rules/ruleset, `256` active/year, `10_000` transitions/zone, `64`-byte names), rejects terminal or non-increasing `UNTIL`, precomputes rule dates in `O(R)` |
+| `sad-parse-zoneinfo` | Unbounded rules/transitions, `%s` expansion, `UNTIL` | Unbounded rule scans, `%s` expansion, and ignored terminal/non-monotonic/out-of-range `UNTIL` | Bounded `try_timespans`/`timespans` (`MAX_RULES_PER_RULESET = 4_096`, `MAX_ACTIVE_RULES_PER_YEAR = 256`, `MAX_ZONE_SEGMENTS = 1_024`, `MAX_RULE_EVALUATIONS_PER_ZONE = 500_000`, `MAX_TRANSITIONS_PER_ZONE = 10_000`, `MAX_FORMAT_TEMPLATE_LEN = 256`, `MAX_FORMATTED_NAME_LEN = 64`), precomputes rule base timestamps per active rule per year, validates `UNTIL` ordering in `i128` with `TimestampOutOfRange`, and rejects terminal/non-increasing `UNTIL` |
 | `sad-parse-zoneinfo` | Inline `#` comment & `>= 4`-segment bugs | `Rule::from_str` used `continue` on `#`; `structure.rs` emitted `/` in names | `break` on `#`; hierarchical slash-free tree building with empty-segment guards |
-| `sad-chrono-tz-build` | Codegen validation, regex & partial writes | Unchecked identifiers/collisions, empty-regex `Arbitrary` errors, mid-write panics | Validates Rust identifiers, normalization/case/zone-link collisions, depth `<= 3`, non-empty regex match, `%z` provenance, `i32` bounds & `\|offset\| < 86_400` in memory before writing files |
+| `sad-chrono-tz-build` | Codegen validation, regex & partial writes | Unchecked identifiers/collisions, empty-regex `Arbitrary` errors, mid-write panics | Validates Rust identifiers, reserved generator declarations/imports, normalization/case/zone-link collisions, depth `<= 3`, non-empty regex match, `%z` provenance, `i32` bounds & `\|offset\| < 86_400` in memory before writing files (validation errors detected before writing starts leave no files written) |
 | `sad-chrono-tz` | Single-clamp spans, PHF length & Serde diagnostics | Premature `saturating_add` in `local_span`; full-string PHF hash; raw unbounded Serde errors | Single-clamp `i128` in `local_span`; `MAX_TZ_NAME_LEN` short-circuit before PHF; `SerdeError` escapes control/quote chars and caps reflected input at `128` bytes on a UTF-8 boundary + `...` |
 
 ## Known Limitations
@@ -163,12 +167,12 @@ for default and MSRV-compatible features (`std`, `serde`, `filter-by-regex`, `ca
 
 * `sad-chrono-tz` and `sad-chrono-tz-build` are licensed under either of
   [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT), at your option.
-* `sad-parse-zoneinfo` is licensed under the [MIT License](parse-zoneinfo/LICENSE-MIT).
+* `sad-parse-zoneinfo` is licensed under the [MIT License](https://github.com/sadco-io/sad-chrono-tz/blob/v0.10.5/parse-zoneinfo/LICENSE-MIT).
 * The IANA Time Zone Database files in `chrono-tz/tz/` are in the public domain.
 
 See [NOTICE](NOTICE) for attribution and a summary of modifications, and [SECURITY.md](SECURITY.md)
 to report a vulnerability.
 
 [upstream]: https://github.com/chronotope/chrono-tz
-[rustsec-ctz]: https://rustsec.org/advisories/RUSTSEC-2026-0555
-[rustsec-ctzb]: https://rustsec.org/advisories/RUSTSEC-2026-0559
+[rustsec-ctz]: https://rustsec.org/advisories/RUSTSEC-2026-0555.html
+[rustsec-ctzb]: https://rustsec.org/advisories/RUSTSEC-2026-0559.html

@@ -15,17 +15,22 @@
 //! Create a time in one timezone and convert it to UTC
 //!
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono::{TimeZone, Utc};
 //! use sad_chrono_tz::US::Pacific;
 //!
 //! let pacific_time = Pacific.with_ymd_and_hms(1990, 5, 6, 12, 30, 45).unwrap();
 //! let utc_time = pacific_time.with_timezone(&Utc);
 //! assert_eq!(utc_time, Utc.with_ymd_and_hms(1990, 5, 6, 19, 30, 45).unwrap());
+//! # }
 //! ```
 //!
 //! Create a naive datetime and convert it to a timezone-aware datetime
 //!
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono::{NaiveDate, TimeZone};
 //! use sad_chrono_tz::Africa::Johannesburg;
 //!
@@ -35,12 +40,15 @@
 //!     .unwrap();
 //! let tz_aware = Johannesburg.from_local_datetime(&naive_dt).unwrap();
 //! assert_eq!(tz_aware.to_string(), "2038-01-19 03:14:08 SAST");
+//! # }
 //! ```
 //!
 //! London and New York change their clocks on different days in March
 //! so only have a 4-hour difference on certain days.
 //!
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono::TimeZone;
 //! use sad_chrono_tz::America::New_York;
 //! use sad_chrono_tz::Europe::London;
@@ -48,45 +56,57 @@
 //! let london_time = London.with_ymd_and_hms(2016, 3, 18, 3, 0, 0).unwrap();
 //! let ny_time = london_time.with_timezone(&New_York);
 //! assert_eq!(ny_time, New_York.with_ymd_and_hms(2016, 3, 17, 23, 0, 0).unwrap());
+//! # }
 //! ```
 //!
 //! Adding 24 hours across a daylight savings change causes a change
 //! in local time
 //!
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono::{Duration, TimeZone};
 //! use sad_chrono_tz::Europe::London;
 //!
 //! let dt = London.with_ymd_and_hms(2016, 10, 29, 12, 0, 0).unwrap();
 //! let later = dt + Duration::hours(24);
 //! assert_eq!(later, London.with_ymd_and_hms(2016, 10, 30, 11, 0, 0).unwrap());
+//! # }
 //! ```
 //!
 //! And of course you can always convert a local time to a unix timestamp
 //!
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono::TimeZone;
 //! use sad_chrono_tz::Asia::Kolkata;
 //!
 //! let dt = Kolkata.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).unwrap();
 //! let timestamp = dt.timestamp();
 //! assert_eq!(timestamp, 946665000);
+//! # }
 //! ```
 //!
 //! Pretty-printing a string will use the correct abbreviation for the timezone
 //!
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono::TimeZone;
 //! use sad_chrono_tz::Europe::London;
 //!
 //! let dt = London.with_ymd_and_hms(2016, 5, 10, 12, 0, 0).unwrap();
 //! assert_eq!(dt.to_string(), "2016-05-10 12:00:00 BST");
 //! assert_eq!(dt.to_rfc3339(), "2016-05-10T12:00:00+01:00");
+//! # }
 //! ```
 //!
 //! You can convert a timezone string to a timezone using the `FromStr` trait
 //!
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono::TimeZone;
 //! use sad_chrono_tz::{Tz, UTC};
 //!
@@ -94,12 +114,21 @@
 //! let dt = tz.with_ymd_and_hms(2016, 10, 22, 12, 0, 0).unwrap();
 //! let utc = dt.with_timezone(&UTC);
 //! assert_eq!(utc.to_string(), "2016-10-21 23:00:00 UTC");
+//! # }
 //! ```
 //!
 //! If you need to iterate over all variants you can use the `TZ_VARIANTS` array
 //! ```
+//! # #[cfg(not(feature = "filter-by-regex"))]
+//! # {
 //! use sad_chrono_tz::{TZ_VARIANTS, Tz};
 //! assert!(TZ_VARIANTS.iter().any(|v| *v == Tz::UTC));
+//! # }
+//! # #[cfg(feature = "filter-by-regex")]
+//! # {
+//! # use sad_chrono_tz::TZ_VARIANTS;
+//! # assert!(!TZ_VARIANTS.is_empty());
+//! # }
 //! ```
 //!
 //! ## Filtering with `filter-by-regex`
@@ -946,6 +975,22 @@ mod tests {
             .and_utc()
             .with_timezone(&sp);
         assert_eq!(at_jan65.offset().fix().local_minus_utc(), -2 * 3600);
+
+        // Decree 55,639: 1965-03-31 24:00 (-02) -> 1965-04-01 02:00:00 UTC returns to -03
+        let before_apr65 = NaiveDate::from_ymd_opt(1965, 4, 1)
+            .unwrap()
+            .and_hms_opt(1, 59, 59)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(before_apr65.offset().fix().local_minus_utc(), -2 * 3600);
+        let at_apr65 = NaiveDate::from_ymd_opt(1965, 4, 1)
+            .unwrap()
+            .and_hms_opt(2, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(at_apr65.offset().fix().local_minus_utc(), -3 * 3600);
 
         // Decree 57,303: 1965-11-30 24:00 (-03) -> 1965-12-01 03:00:00 UTC starts -02 DST
         let before_dec65 = NaiveDate::from_ymd_opt(1965, 12, 1)

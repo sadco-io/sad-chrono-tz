@@ -32,12 +32,16 @@ This fork includes the following changes relative to `chrono-tz` 0.10.4 /
 
 - Upstream improvements cherry-picked from `chronotope/chrono-tz`:
   - `chrono-tz#211` (Robert Bastian): `%z` numeric offset format support in
-    `parse-zoneinfo`, adapted to preserve `%z` provenance (`None` in
-    `OffsetName::abbreviation()`) for `chrono-tz 0.10.4` runtime parity
+    `parse-zoneinfo` (where public `Format::format` takes three arguments as in
+    `parse-zoneinfo 0.5.0`, vs two in `0.4.0`), adapted to preserve `%z`
+    provenance (`None` in `OffsetName::abbreviation()`) for `chrono-tz 0.10.4`
+    runtime parity
   - `chrono-tz#214` (Robert Bastian): link deduplication in `chrono-tz-build`
-  - `chrono-tz#218` (Robert Bastian): exact `CHRONO_TZ_TIMEZONE_FILTER` regex
-    filtering (`chrono-tz#215`), with conditional `Default for Tz` when `UTC` is
-    included and empty-match rejection at build time
+  - `chrono-tz#218` (Robert Bastian): `CHRONO_TZ_TIMEZONE_FILTER` regex
+    filtering (`chrono-tz#215`) selecting only zones whose names match the regex
+    (whole-name matching requires anchors such as `^...$`, and an unset or
+    blank filter leaves all zones enabled), with conditional `Default for Tz`
+    when `UTC` is included and empty-match rejection at build time
   - `chrono-tz#222` (Dirkjan Ochtman): lifetime elision warning cleanups in
     `parse-zoneinfo`
   - `chrono-tz#223` (Yotam Ofek): update `phf` / `phf_codegen` / `phf_shared`
@@ -51,26 +55,32 @@ This fork includes the following changes relative to `chrono-tz` 0.10.4 /
 - Security and robustness fixes by the Sadco Security Team:
   - `sad-parse-zoneinfo`: constant-time `i128` Gregorian year-to-timestamp
     calculation clamping `ChangeTime::to_timestamp()` once to `i64`; single-clamp
-    `i128` arithmetic in `RuleInfo::absolute_datetime`; `1..=31` day token
-    validation plus month/leap-year ordinal date validation in
-    `try_to_concrete_day`, parsing, and transitions while preserving weekday
-    spillover; `i16`/`i128` calendar boundary math; `FailedYearParse` on
-    symbolic `Zone` `UNTIL` years and non-panicking handling in `RuleInfo` /
-    `ChangeTime`; `TimeSpec` validation allowing leading `+`/`-` on hours and
-    rejecting mixed signs or mins/secs `>= 60`; cycle-safe `Table::get_zoneset`
-    returning `None` on broken/cyclic links and zone/link collision rejection in
-    `TableBuilder`; safe `%z` formatting, bounded `Format::try_format`, and
-    fallible `Format::try_format_constant`; bounded `Table::try_timespans` /
-    `try_codegen_timespans` (`4_096` rules/ruleset, `256` active/year, `10_000`
-    transitions/zone, `64`-byte names), terminal/monotonic `UNTIL` validation,
-    and `O(R)` per-year rule precomputation; inline `#` comment `break` fix;
-    and safe handling of `>= 4`-segment zone names in `structure.rs`
-  - `sad-chrono-tz-build`: Rust identifier grammar validation, normalization/
-    case/zone-link collision detection, broken/cyclic link and depth `<= 3`
-    rejection, empty-selection rejection, `%z` provenance preservation, `i32`
-    and `|offset| < 86_400` validation, `{:?}` string-literal escaping,
-    `MAX_TZ_NAME_LEN` pre-checks before PHF lookups, and in-memory codegen
-    prior to writing output files
+    `i128` arithmetic in `RuleInfo::absolute_datetime` (including its fallback);
+    `1..=31` day token validation plus month/leap-year ordinal and `weekday<=`/`>=`
+    validation (`zic`-aligned `Feb weekday<=29` common-year normalization) while
+    preserving valid spillover; `i16`/`i128` calendar boundary math;
+    `FailedYearParse` on symbolic `Zone` `UNTIL` years and non-panicking
+    handling in `RuleInfo` / `ChangeTime`; `TimeSpec` validation allowing leading
+    `+`/`-` on hours and rejecting mixed signs or mins/secs `>= 60`; cycle-safe
+    `Table::get_zoneset` returning `None` on broken/cyclic links and zone/link
+    collision rejection in `TableBuilder`; safe `%z` formatting, template- and
+    output-bounded `Format::try_format` (`256`-byte template cap), and fallible
+    `Format::try_format_constant`; bounded `Table::try_timespans` /
+    `try_codegen_timespans` (`1_024` segments/zone, `4_096` rules/ruleset, `256`
+    active/year, `500_000` rule evaluations/zone, `10_000` transitions/zone,
+    `64`-byte names), per-year rule base timestamp precomputation, `i128` `UNTIL`
+    ordering (`TimestampOutOfRange`) and terminal/monotonic `UNTIL` validation;
+    inline `#` comment `break` fix; and safe handling of `>= 4`-segment zone
+    names in `structure.rs`
+  - `sad-chrono-tz-build`: Rust identifier grammar validation, reserved
+    generator declaration/import checks (`IANA_TZDB_VERSION`, `Tz`, `ParseError`,
+    `TZ_VARIANTS`, `TIMEZONES`, `MAX_TZ_NAME_LEN`, etc.), normalization/case/
+    zone-link collision detection, broken/cyclic link rejection, rejection of
+    hierarchies deeper than three segments, empty-selection rejection, `%z`
+    provenance preservation, `i32` and `|offset| < 86_400` validation, `{:?}`
+    string-literal escaping, `MAX_TZ_NAME_LEN` pre-checks before PHF lookups,
+    and in-memory generation before sequential output writes (validation errors
+    detected before writing starts leave no files written)
   - `sad-chrono-tz`: single-clamp `i128` arithmetic in
     `FixedTimespanSet::local_span`, `MAX_TZ_NAME_LEN` pre-check in
     `FromStr`/`from_str_insensitive`, `escape_debug()` + `128`-byte UTF-8-safe
@@ -83,6 +93,7 @@ This fork includes the following changes relative to `chrono-tz` 0.10.4 /
   - Real `LICENSE-MIT` and `LICENSE-APACHE` files replacing symlinks
 
 The upstream fixes listed above were written by their upstream authors; see
-`CHANGELOG.md` for attribution of each change. The packaging changes and the
-Sadco Security Team fixes listed above were developed by the Sadco Security Team
-with assistance from AI coding tools (Anthropic Claude, Google Gemini).
+https://github.com/sadco-io/sad-chrono-tz/blob/v0.10.5/CHANGELOG.md for
+attribution of each change. The packaging changes and the Sadco Security Team
+fixes listed above were developed by the Sadco Security Team with assistance
+from AI coding tools (Anthropic Claude, Google Gemini).

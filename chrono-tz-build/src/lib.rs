@@ -27,6 +27,55 @@ const RUST_KEYWORDS: &[&str] = &[
     "override", "priv", "try", "typeof", "unsized", "virtual", "yield", "gen",
 ];
 
+/// Identifiers declared, imported, or re-exported at the top level of `directory.rs`
+/// and the `sad-chrono-tz` crate root.
+const DIRECTORY_ROOT_RESERVED: &[&str] = &[
+    "IANA_TZDB_VERSION",
+    "Tz",
+    "directory",
+    "timezones",
+    "ParseError",
+    "TZ_VARIANTS",
+    "GapInfo",
+    "OffsetComponents",
+    "OffsetName",
+    "TzOffset",
+    "prebuilt",
+    "binary_search",
+    "timezone_impl",
+    "serde",
+];
+
+/// Identifiers imported into `directory.rs` submodules (`use super::*` / `use crate::timezones::Tz`).
+const DIRECTORY_SUBMODULE_RESERVED: &[&str] = &["Tz", "IANA_TZDB_VERSION"];
+
+/// Identifiers declared or imported in `timezones.rs` (including inside `TimeSpans::timespans`).
+const TIMEZONES_RESERVED_IDENTS: &[&str] = &[
+    "Tz",
+    "ParseError",
+    "TZ_VARIANTS",
+    "TIMEZONES",
+    "TIMEZONES_UNCASED",
+    "MAX_TZ_NAME_LEN",
+    "TimeSpans",
+    "FixedTimespanSet",
+    "FixedTimespan",
+    "Debug",
+    "Display",
+    "Formatter",
+    "FromStr",
+    "UncasedStr",
+    "fmt",
+    "IANA_TZDB_VERSION",
+];
+
+fn matches_reserved(ident: &str, reserved: &[&str]) -> bool {
+    let upper = ident.to_ascii_uppercase();
+    reserved
+        .iter()
+        .any(|&r| r == ident || r.to_ascii_uppercase() == upper)
+}
+
 fn is_valid_rust_ident(ident: &str) -> bool {
     if ident.is_empty() || ident == "_" || RUST_KEYWORDS.contains(&ident) {
         return false;
@@ -183,6 +232,11 @@ fn validate_zones(table: &Table, zones: &BTreeSet<&str>, uncased: bool) -> Resul
                 "timezone `{zone}` normalizes to invalid Rust identifier `{variant}`"
             ));
         }
+        if matches_reserved(&variant, TIMEZONES_RESERVED_IDENTS) {
+            return Err(format!(
+                "timezone `{zone}` normalizes to reserved identifier `{variant}` in `timezones.rs`"
+            ));
+        }
         if let Some(&prev) = variant_idents.get(&variant) {
             return Err(format!(
                 "normalization collision: `{prev}` and `{zone}` both normalize to `Tz::{variant}`"
@@ -207,6 +261,11 @@ fn validate_zones(table: &Table, zones: &BTreeSet<&str>, uncased: bool) -> Resul
                 "resolved target `{resolved}` normalizes to invalid Rust const `{resolved_upper}`"
             ));
         }
+        if matches_reserved(&resolved_upper, TIMEZONES_RESERVED_IDENTS) {
+            return Err(format!(
+                "resolved target `{resolved}` normalizes to reserved identifier `{resolved_upper}` in `timezones.rs`"
+            ));
+        }
         if let Some(&prev) = target_const_idents.get(&resolved_upper) {
             if prev != resolved {
                 return Err(format!(
@@ -218,11 +277,21 @@ fn validate_zones(table: &Table, zones: &BTreeSet<&str>, uncased: bool) -> Resul
         }
 
         let segments: Vec<&str> = zone.split('/').collect();
-        for &seg in &segments {
+        for (idx, &seg) in segments.iter().enumerate() {
             let seg_ident = convert_bad_chars(seg);
             if !is_valid_rust_ident(&seg_ident) {
                 return Err(format!(
                     "segment `{seg}` of timezone `{zone}` normalizes to invalid Rust identifier `{seg_ident}`"
+                ));
+            }
+            let reserved = if idx == 0 {
+                DIRECTORY_ROOT_RESERVED
+            } else {
+                DIRECTORY_SUBMODULE_RESERVED
+            };
+            if matches_reserved(&seg_ident, reserved) {
+                return Err(format!(
+                    "segment `{seg}` of timezone `{zone}` (`{seg_ident}`) collides with reserved generator identifier"
                 ));
             }
         }
@@ -686,9 +755,8 @@ fn try_get_filter_regex() -> Result<Option<regex::Regex>, String> {
     }
 }
 
-fn detect_iana_db_version() -> Result<String, String> {
-    let root = env::var("CARGO_MANIFEST_DIR").map_err(|_| "no Cargo build context".to_owned())?;
-    let path = Path::new(&root).join(Path::new("tz/NEWS"));
+fn detect_iana_db_version(root: &Path) -> Result<String, String> {
+    let path = root.join(Path::new("tz/NEWS"));
     let file = File::open(&path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
 
     let lines = BufReader::new(file).lines();
@@ -731,10 +799,21 @@ fn write_atomic_checked(dir: &Path, timezones_rs: &str, directory_rs: &str) -> i
     Ok(())
 }
 
-pub fn try_main(dir: &Path, filter: bool, uncased: bool) -> Result<(), String> {
+fn try_generate_and_write(
+    dir: &Path,
+    table: &Table,
+    zones: &BTreeSet<&str>,
+    uncased: bool,
+    version: &str,
+) -> Result<(), String> {
+    let (timezones_rs, directory_rs) = generate_files_in_memory(table, zones, uncased, version)?;
+    write_atomic_checked(dir, &timezones_rs, &directory_rs)
+        .map_err(|e| format!("failed to write generated files to {}: {e}", dir.display()))
+}
+
+fn try_main_from_root(root: &Path, dir: &Path, filter: bool, uncased: bool) -> Result<(), String> {
     let mut table = TableBuilder::new();
 
-    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| String::new()));
     for fname in FILES {
         let path = root.join(format!("tz/{fname}"));
         let file = File::open(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
@@ -785,10 +864,15 @@ pub fn try_main(dir: &Path, filter: bool, uncased: bool) -> Result<(), String> {
         return Err("timezone selection is empty; zero timezones to generate".to_owned());
     }
 
-    let version = detect_iana_db_version()?;
-    let (timezones_rs, directory_rs) = generate_files_in_memory(&table, &zones, uncased, &version)?;
-    write_atomic_checked(dir, &timezones_rs, &directory_rs)
-        .map_err(|e| format!("failed to write generated files to {}: {e}", dir.display()))
+    let version = detect_iana_db_version(root)?;
+    try_generate_and_write(dir, &table, &zones, uncased, &version)
+}
+
+pub fn try_main(dir: &Path, filter: bool, uncased: bool) -> Result<(), String> {
+    let root = PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR").map_err(|_| "no Cargo build context".to_owned())?,
+    );
+    try_main_from_root(&root, dir, filter, uncased)
 }
 
 pub fn main(dir: &Path, filter: bool, uncased: bool) {
@@ -998,21 +1082,81 @@ mod tests {
         assert!(dir_rs2.contains("pub const Buenos_Aires: Tz"));
     }
 
+    struct TempDirGuard(PathBuf);
+
+    impl TempDirGuard {
+        fn new(prefix: &str) -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let base = env::temp_dir();
+            let pid = std::process::id();
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            loop {
+                let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+                let candidate = base.join(format!("{prefix}-{pid}-{nanos}-{seq}"));
+                match std::fs::create_dir(&candidate) {
+                    Ok(()) => return Self(candidate),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("failed to create temp dir {}: {e}", candidate.display()),
+                }
+            }
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn rejects_reserved_generator_identifiers_and_writes_no_files() {
+        for bad_zone in [
+            "IANA_TZDB_VERSION",
+            "IANA_TZDB_VERSION-",
+            "iana_tzdb_version",
+            "Tz",
+            "directory",
+            "timezones",
+            "ParseError",
+            "TZ_VARIANTS",
+            "Europe/Tz",
+            "Europe/IANA_TZDB_VERSION",
+        ] {
+            let t = parse_table(&format!("Zone {bad_zone} 0 - TEST\n"));
+            let z: BTreeSet<&str> = [bad_zone].into_iter().collect();
+            let err = generate_files_in_memory(&t, &z, false, "2026f").unwrap_err();
+            assert!(err.contains("reserved"), "{bad_zone}: {err}");
+        }
+
+        // Also exercise the full tz-reading + codegen + write entry point on real temp directories.
+        let tz_root = TempDirGuard::new("sad-chrono-tz-build-reserved-tz");
+        let out_dir = TempDirGuard::new("sad-chrono-tz-build-reserved-out");
+        let tz_dir = tz_root.0.join("tz");
+        std::fs::create_dir(&tz_dir).unwrap();
+        std::fs::write(tz_dir.join("NEWS"), "Release 2026f - 2026-01-01\n").unwrap();
+        for fname in FILES {
+            let contents = if *fname == "africa" {
+                "Zone IANA_TZDB_VERSION 0 - TEST\n"
+            } else {
+                ""
+            };
+            std::fs::write(tz_dir.join(fname), contents).unwrap();
+        }
+        let err = try_main_from_root(&tz_root.0, &out_dir.0, false, false).unwrap_err();
+        assert!(err.contains("reserved"), "{err}");
+        assert!(std::fs::read_dir(&out_dir.0).unwrap().next().is_none());
+    }
+
     #[test]
     fn atomic_in_memory_validation_writes_no_files_on_failure() {
-        let dir = env::temp_dir().join(format!(
-            "sad-chrono-tz-build-atomic-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDirGuard::new("sad-chrono-tz-build-atomic-test");
 
         let table = parse_table("Link Missing/Target Broken/Link\n");
         let zones: BTreeSet<&str> = ["Broken/Link"].into_iter().collect();
-        assert!(generate_files_in_memory(&table, &zones, false, "2026f").is_err());
-        assert!(!dir.join("timezones.rs").exists());
-        assert!(!dir.join("directory.rs").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(try_generate_and_write(&dir.0, &table, &zones, false, "2026f").is_err());
+        assert!(std::fs::read_dir(&dir.0).unwrap().next().is_none());
     }
 }
