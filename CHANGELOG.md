@@ -80,10 +80,10 @@ targeting `sad-chrono = "0.4.48"` (`0.4.48+`) with MSRV `1.66.0` (optional
     `Table::get_zoneset`, returning `None` on broken or cyclic links, and reject
     zone/link name collisions in `TableBuilder`.
   * Support fractional-minute `%z` formatting and unbounded hours via `i128`
-    `unsigned_abs()`; add fallible `Format::try_format` (enforcing
-    `MAX_FORMAT_TEMPLATE_LEN = 256` and output `max_len` before allocating or
-    scanning) and `Format::try_format_constant` (while documenting `# Panics` on
-    `Format::format_constant`).
+    `unsigned_abs()`; add fallible `Format::try_format` (rejecting complete
+    templates over `MAX_FORMAT_TEMPLATE_LEN = 256` bytes and formatted output
+    exceeding `max_len`) and `Format::try_format_constant` (while documenting
+    `# Panics` on `Format::format_constant`).
   * Add bounded fallible `Table::try_timespans` and `Table::try_codegen_timespans`
     (delegated to by `TableTransitions::timespans` returning `Option`): cap
     rulesets (`4_096` rules), active rules per year (`256`), zone segments
