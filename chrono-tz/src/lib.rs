@@ -101,6 +101,13 @@
 //! use sad_chrono_tz::{TZ_VARIANTS, Tz};
 //! assert!(TZ_VARIANTS.iter().any(|v| *v == Tz::UTC));
 //! ```
+//!
+//! ## Filtering with `filter-by-regex`
+//!
+//! When the `filter-by-regex` feature is enabled with `CHRONO_TZ_TIMEZONE_FILTER`,
+//! [`Default`] is implemented for [`Tz`] only when `UTC` is included in the
+//! compiled zone set. Examples above that reference `UTC` or `Tz::UTC` also
+//! require `UTC` to be present in the filtered set.
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -496,15 +503,34 @@ mod tests {
 
     #[test]
     fn test_numeric_names() {
+        use super::OffsetName;
+
+        let gmt_plus_1 = Tz::Etc__GMTPlus1
+            .with_ymd_and_hms(2026, 6, 1, 12, 0, 0)
+            .unwrap();
+        assert_eq!(gmt_plus_1.offset().abbreviation(), None);
+        assert_eq!(gmt_plus_1.offset().to_string(), "-01");
+
         let dt = Scoresbysund.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        assert_eq!(dt.offset().abbreviation(), None);
         assert_eq!(format!("{}", dt.offset()), "-01");
         assert_eq!(format!("{:?}", dt.offset()), "-01");
         let dt = Casey.with_ymd_and_hms(2022, 11, 1, 0, 0, 0).unwrap();
+        assert_eq!(dt.offset().abbreviation(), None);
         assert_eq!(format!("{}", dt.offset()), "+11");
         assert_eq!(format!("{:?}", dt.offset()), "+11");
         let dt = Addis_Ababa.with_ymd_and_hms(1937, 2, 1, 0, 0, 0).unwrap();
+        assert_eq!(dt.offset().abbreviation(), None);
         assert_eq!(format!("{}", dt.offset()), "+0245");
         assert_eq!(format!("{:?}", dt.offset()), "+0245");
+
+        let ny_winter = Eastern.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        assert_eq!(ny_winter.offset().abbreviation(), Some("EST"));
+        assert_eq!(ny_winter.offset().to_string(), "EST");
+
+        let utc_dt = UTC.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        assert_eq!(utc_dt.offset().abbreviation(), Some("UTC"));
+        assert_eq!(utc_dt.offset().to_string(), "UTC");
     }
 
     fn gap_info_test(tz: Tz, gap_begin: NaiveDateTime, gap_end: NaiveDateTime) {
@@ -660,7 +686,15 @@ mod tests {
                 let dt = tz.from_utc_datetime(&probe);
                 let off = dt.offset();
                 assert_eq!(off.tz_id(), name);
-                assert!(off.abbreviation().is_some());
+                let disp = format!("{off}");
+                if let Some(abbr) = off.abbreviation() {
+                    assert_eq!(disp, abbr);
+                } else {
+                    assert!(
+                        disp.starts_with('+') || disp.starts_with('-'),
+                        "expected signed numeric Display for {name}: {disp}"
+                    );
+                }
                 let fixed = off.fix();
                 let components_total = off.base_utc_offset() + off.dst_offset();
                 assert_eq!(
@@ -719,6 +753,41 @@ mod tests {
 
         // 2026f: America/Havana skips 2026-11-01 fallback, stays -04 through 2027-11-07.
         let havana = Tz::America__Havana;
+        for utc_dt in [
+            NaiveDate::from_ymd_opt(2026, 11, 1)
+                .unwrap()
+                .and_hms_opt(3, 59, 59)
+                .unwrap(),
+            NaiveDate::from_ymd_opt(2026, 11, 1)
+                .unwrap()
+                .and_hms_opt(4, 0, 0)
+                .unwrap(),
+            NaiveDate::from_ymd_opt(2026, 11, 1)
+                .unwrap()
+                .and_hms_opt(5, 0, 0)
+                .unwrap(),
+        ] {
+            let dt = utc_dt.and_utc().with_timezone(&havana);
+            assert_eq!(dt.offset().fix().local_minus_utc(), -4 * 3600);
+            assert_eq!(dt.offset().to_string(), "CDT");
+        }
+        let hav_before_2027 = NaiveDate::from_ymd_opt(2027, 11, 7)
+            .unwrap()
+            .and_hms_opt(4, 59, 59)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&havana);
+        assert_eq!(hav_before_2027.offset().fix().local_minus_utc(), -4 * 3600);
+        assert_eq!(hav_before_2027.offset().to_string(), "CDT");
+        let hav_at_2027 = NaiveDate::from_ymd_opt(2027, 11, 7)
+            .unwrap()
+            .and_hms_opt(5, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&havana);
+        assert_eq!(hav_at_2027.offset().fix().local_minus_utc(), -5 * 3600);
+        assert_eq!(hav_at_2027.offset().to_string(), "CST");
+
         let hav_nov_2026 = NaiveDate::from_ymd_opt(2026, 11, 2)
             .unwrap()
             .and_hms_opt(12, 0, 0)
@@ -855,5 +924,59 @@ mod tests {
                 (std_hours + 1) * 3600
             );
         }
+    }
+
+    #[test]
+    fn brazil_1965_1966_transition_edges() {
+        use sad_chrono::Offset;
+
+        let sp = Tz::America__Sao_Paulo;
+        // Decree 55,639: 1965-01-31 00:00 (-03) -> 03:00:00 UTC starts -02 DST
+        let before_jan65 = NaiveDate::from_ymd_opt(1965, 1, 31)
+            .unwrap()
+            .and_hms_opt(2, 59, 59)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(before_jan65.offset().fix().local_minus_utc(), -3 * 3600);
+        let at_jan65 = NaiveDate::from_ymd_opt(1965, 1, 31)
+            .unwrap()
+            .and_hms_opt(3, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(at_jan65.offset().fix().local_minus_utc(), -2 * 3600);
+
+        // Decree 57,303: 1965-11-30 24:00 (-03) -> 1965-12-01 03:00:00 UTC starts -02 DST
+        let before_dec65 = NaiveDate::from_ymd_opt(1965, 12, 1)
+            .unwrap()
+            .and_hms_opt(2, 59, 59)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(before_dec65.offset().fix().local_minus_utc(), -3 * 3600);
+        let at_dec65 = NaiveDate::from_ymd_opt(1965, 12, 1)
+            .unwrap()
+            .and_hms_opt(3, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(at_dec65.offset().fix().local_minus_utc(), -2 * 3600);
+
+        // Decree 57,843: 1966-03-01 01:00 wall (-02) -> 03:00:00 UTC returns to -03
+        let before_mar66 = NaiveDate::from_ymd_opt(1966, 3, 1)
+            .unwrap()
+            .and_hms_opt(2, 59, 59)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(before_mar66.offset().fix().local_minus_utc(), -2 * 3600);
+        let at_mar66 = NaiveDate::from_ymd_opt(1966, 3, 1)
+            .unwrap()
+            .and_hms_opt(3, 0, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&sp);
+        assert_eq!(at_mar66.offset().fix().local_minus_utc(), -3 * 3600);
     }
 }

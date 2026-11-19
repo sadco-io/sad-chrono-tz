@@ -145,7 +145,14 @@ impl RuleInfo {
         year >= from && year <= to
     }
 
-    pub fn absolute_datetime(&self, year: i64, utc_offset: i64, dst_offset: i64) -> i64 {
+    /// Computes the rule's transition instant in `i128` seconds without clamping,
+    /// validating calendar dates (such as February 29 in a non-leap year).
+    pub fn try_absolute_datetime_i128(
+        &self,
+        year: i64,
+        utc_offset: i64,
+        dst_offset: i64,
+    ) -> Result<i128, line::Error> {
         let offset: i128 = match self.time_type {
             TimeType::UTC => 0,
             TimeType::Standard => utc_offset as i128,
@@ -153,8 +160,23 @@ impl RuleInfo {
         };
 
         let changetime = ChangeTime::UntilDay(Year::Number(year), self.month, self.day);
-        let unused = 0;
-        let ts = changetime.to_timestamp(unused, unused) as i128 + self.time as i128 - offset;
+        let day_ts = changetime.try_to_timestamp_i128(0, 0)?;
+        Ok(day_ts + self.time as i128 - offset)
+    }
+
+    pub fn absolute_datetime(&self, year: i64, utc_offset: i64, dst_offset: i64) -> i64 {
+        let ts = match self.try_absolute_datetime_i128(year, utc_offset, dst_offset) {
+            Ok(ts) => ts,
+            Err(_) => {
+                let offset: i128 = match self.time_type {
+                    TimeType::UTC => 0,
+                    TimeType::Standard => utc_offset as i128,
+                    TimeType::Wall => utc_offset as i128 + dst_offset as i128,
+                };
+                let changetime = ChangeTime::UntilDay(Year::Number(year), self.month, self.day);
+                changetime.to_timestamp(0, 0) as i128 + self.time as i128 - offset
+            }
+        };
         ts.clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 }
@@ -264,46 +286,98 @@ impl Format {
         }
     }
 
-    pub fn format(&self, utc_offset: i64, dst_offset: i64, letters: Option<&String>) -> String {
+    /// Returns `true` if this format is [`Format::Offset`] (`%z`).
+    pub fn is_offset(&self) -> bool {
+        matches!(*self, Format::Offset)
+    }
+
+    /// Formats the timezone abbreviation if the resulting byte length does not
+    /// exceed `max_len`, returning `None` if it would exceed `max_len` without
+    /// allocating an oversized buffer.
+    pub fn try_format(
+        &self,
+        utc_offset: i64,
+        dst_offset: i64,
+        letters: Option<&String>,
+        max_len: usize,
+    ) -> Option<String> {
         let letters = match letters {
             Some(l) => &**l,
             None => "",
         };
 
         match *self {
-            Format::Constant(ref s) => s.clone(),
-            Format::Placeholder(ref s) => s.replace("%s", letters),
-            Format::Alternate { ref standard, .. } if dst_offset == 0 => standard.clone(),
-            Format::Alternate { ref dst, .. } => dst.clone(),
+            Format::Constant(ref s) => (s.len() <= max_len).then(|| s.clone()),
+            Format::Placeholder(ref s) => {
+                let matches = s.matches("%s").count();
+                let out_len = s
+                    .len()
+                    .checked_sub(matches * 2)?
+                    .checked_add(matches.checked_mul(letters.len())?)?;
+                if out_len > max_len {
+                    return None;
+                }
+                let mut out = String::with_capacity(out_len);
+                for (idx, chunk) in s.split("%s").enumerate() {
+                    if idx > 0 {
+                        out.push_str(letters);
+                    }
+                    out.push_str(chunk);
+                }
+                Some(out)
+            }
+            Format::Alternate { ref standard, .. } if dst_offset == 0 => {
+                (standard.len() <= max_len).then(|| standard.clone())
+            }
+            Format::Alternate { ref dst, .. } => (dst.len() <= max_len).then(|| dst.clone()),
             Format::Offset => {
                 let offset = utc_offset as i128 + dst_offset as i128;
                 let sign = if offset < 0 { '-' } else { '+' };
                 let off = offset.unsigned_abs();
-
-                let mut f = String::from(sign);
 
                 let minutes = off / 60;
                 let secs = off % 60;
                 let mins = minutes % 60;
                 let hours = minutes / 60;
 
+                let mut f = String::with_capacity(16);
+                f.push(sign);
                 let _ = write!(&mut f, "{hours:02}");
                 if secs != 0 {
                     let _ = write!(&mut f, "{mins:02}{secs:02}");
                 } else if mins != 0 {
                     let _ = write!(&mut f, "{mins:02}");
                 }
-                f
+                (f.len() <= max_len).then_some(f)
             }
         }
     }
 
-    pub fn format_constant(&self) -> String {
-        if let Format::Constant(ref s) = *self {
-            s.clone()
-        } else {
-            panic!("Expected a constant formatting string");
+    pub fn format(&self, utc_offset: i64, dst_offset: i64, letters: Option<&String>) -> String {
+        self.try_format(utc_offset, dst_offset, letters, usize::MAX)
+            .expect("unbounded format length")
+    }
+
+    /// Returns the constant abbreviation string if this format is
+    /// [`Format::Constant`], or `None` for dynamic formats (`Alternate`,
+    /// `Placeholder`, or `Offset`).
+    pub fn try_format_constant(&self) -> Option<&str> {
+        match *self {
+            Format::Constant(ref s) => Some(s.as_str()),
+            _ => None,
         }
+    }
+
+    /// Returns the constant abbreviation string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self` is not [`Format::Constant`]. Prefer
+    /// [`Format::try_format_constant`] for fallible callers.
+    pub fn format_constant(&self) -> String {
+        self.try_format_constant()
+            .expect("Expected a constant formatting string")
+            .to_owned()
     }
 }
 
@@ -356,6 +430,10 @@ impl TableBuilder {
             if !self.table.rulesets.contains_key(ruleset_name) {
                 return Err(Error::UnknownRuleset(ruleset_name));
             }
+        }
+
+        if self.table.links.contains_key(zone_line.name) {
+            return Err(Error::DuplicateZone);
         }
 
         let zoneset = match self.table.zonesets.entry(zone_line.name.to_owned()) {
@@ -415,6 +493,10 @@ impl TableBuilder {
         &mut self,
         link_line: line::Link<'line>,
     ) -> Result<(), Error<'line>> {
+        if self.table.zonesets.contains_key(link_line.new) {
+            return Err(Error::DuplicateLink(link_line.new));
+        }
+
         match self.table.links.entry(link_line.new.to_owned()) {
             Entry::Occupied(_) => Err(Error::DuplicateLink(link_line.new)),
             Entry::Vacant(e) => {
@@ -563,5 +645,84 @@ mod tests {
         };
         assert!(!rule_inverted.applies_to_year(2000));
         let _ = rule_inverted.absolute_datetime(i64::MAX, i64::MAX, i64::MAX);
+    }
+
+    #[test]
+    fn rule_info_single_clamp_boundary() {
+        // Year where Jan 1 00:00 UTC is just above i64::MAX, and a large positive UTC
+        // offset brings the resulting UTC timestamp back below i64::MAX.
+        // 2^63 / 31_556_952 ~= 292_277_026_596 -> let's pick year 292_277_026_597
+        let rule = RuleInfo {
+            from_year: Year::Minimum,
+            to_year: Some(Year::Maximum),
+            month: Month::January,
+            day: DaySpec::Ordinal(1),
+            time: 0,
+            time_type: TimeType::Standard,
+            time_to_add: 0,
+            letters: None,
+        };
+        let jan1 = ChangeTime::UntilDay(
+            Year::Number(292_277_026_597),
+            Month::January,
+            DaySpec::Ordinal(1),
+        )
+        .try_to_timestamp_i128(0, 0)
+        .unwrap();
+        assert!(jan1 > i64::MAX as i128);
+        let delta = (jan1 - i64::MAX as i128) as i64 + 100;
+        let resolved = rule.absolute_datetime(292_277_026_597, delta, 0);
+        assert_eq!(resolved, i64::MAX - 100);
+
+        // And with offset = 0, clamps to i64::MAX; with negative offset = -3600, clamps to i64::MAX
+        // (not i64::MAX - 3600).
+        let rule_wall = RuleInfo {
+            time_type: TimeType::Wall,
+            ..rule
+        };
+        assert_eq!(
+            rule_wall.absolute_datetime(292_277_026_597, 3600, -7200),
+            i64::MAX
+        );
+    }
+
+    #[test]
+    fn format_try_format_and_try_format_constant() {
+        let constant = Format::new("EST");
+        assert_eq!(constant.try_format_constant(), Some("EST"));
+        assert_eq!(constant.try_format(0, 0, None, 64), Some("EST".to_owned()));
+        assert_eq!(constant.try_format(0, 0, None, 2), None);
+
+        let offset = Format::new("%z");
+        assert_eq!(offset.try_format_constant(), None);
+        assert!(offset.is_offset());
+
+        let placeholder = Format::new("%s%s%s%s");
+        assert_eq!(placeholder.try_format_constant(), None);
+        let long_letters = "X".repeat(20);
+        assert_eq!(placeholder.try_format(0, 0, Some(&long_letters), 64), None);
+        assert_eq!(
+            Format::new("A%sB").try_format(0, 0, Some(&"S".to_owned()), 64),
+            Some("ASB".to_owned())
+        );
+    }
+
+    #[test]
+    fn table_builder_rejects_zone_link_collisions() {
+        let mut b1 = TableBuilder::new();
+        b1.add_line(Line::new("Zone Foo/Bar 0 - FB").unwrap())
+            .unwrap();
+        assert_eq!(
+            b1.add_line(Line::new("Link Foo/Bar Foo/Bar").unwrap()),
+            Err(Error::DuplicateLink("Foo/Bar"))
+        );
+
+        let mut b2 = TableBuilder::new();
+        b2.add_line(Line::new("Link Foo/Baz Foo/Bar").unwrap())
+            .unwrap();
+        assert_eq!(
+            b2.add_line(Line::new("Zone Foo/Bar 0 - FB").unwrap()),
+            Err(Error::DuplicateZone)
+        );
     }
 }

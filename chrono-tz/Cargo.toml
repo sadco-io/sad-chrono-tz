@@ -36,7 +36,7 @@ include = [
 
 [dependencies]
 arbitrary = { version = "1.2", optional = true, features = ["derive"] }
-sad-chrono = { version = "0.4.46", default-features = false }
+sad-chrono = { version = "0.4.48", default-features = false }
 defmt = { version = "1.0.1", optional = true }
 serde_core = { version = "1.0.220", optional = true, default-features = false }
 phf = { version = "0.13", default-features = false }
@@ -55,7 +55,7 @@ chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build"
 
 [dev-dependencies]
 serde_test = "1"
-sad-chrono = { version = "0.4.46", default-features = false, features = ["alloc"] }
+sad-chrono = { version = "0.4.48", default-features = false, features = ["alloc"] }
 chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.5.1" }
 
 [package.metadata.docs.rs]

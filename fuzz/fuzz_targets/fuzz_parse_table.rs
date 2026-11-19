@@ -12,8 +12,15 @@ fuzz_target!(|data: &[u8]| {
 
     let mut builder = TableBuilder::new();
     for line in text.lines() {
-        if let Ok(parsed) = Line::new(line) {
-            let _ = builder.add_line(parsed);
+        match Line::new(line) {
+            Ok(parsed) => {
+                if let Err(err) = builder.add_line(parsed) {
+                    let _ = err.to_string();
+                }
+            }
+            Err(err) => {
+                let _ = err.to_string();
+            }
         }
     }
 
@@ -21,6 +28,12 @@ fuzz_target!(|data: &[u8]| {
     let _ = table.structure().into_iter().count();
     for name in table.zonesets.keys().chain(table.links.keys()) {
         let _ = table.get_zoneset(name);
+        if let Err(err) = table.try_timespans(name) {
+            let _ = err.to_string();
+        }
+        if let Err(err) = table.try_codegen_timespans(name) {
+            let _ = err.to_string();
+        }
         let _ = table.timespans(name);
     }
 });

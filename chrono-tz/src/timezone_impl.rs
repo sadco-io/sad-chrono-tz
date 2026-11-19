@@ -265,33 +265,23 @@ impl FixedTimespanSet {
 
     fn local_span(&self, index: usize) -> Span {
         debug_assert!(index < self.len());
+        let clamp_local = |ts: i64, span: FixedTimespan| -> i64 {
+            (ts as i128 + span.utc_offset as i128 + span.dst_offset as i128)
+                .clamp(i64::MIN as i128, i64::MAX as i128) as i64
+        };
         Span {
             begin: if index == 0 {
                 None
             } else {
                 let span = self.rest[index - 1];
-                Some(
-                    span.0
-                        .saturating_add(span.1.utc_offset as i64)
-                        .saturating_add(span.1.dst_offset as i64),
-                )
+                Some(clamp_local(span.0, span.1))
             },
             end: if index == self.rest.len() {
                 None
             } else if index == 0 {
-                Some(
-                    self.rest[index]
-                        .0
-                        .saturating_add(self.first.utc_offset as i64)
-                        .saturating_add(self.first.dst_offset as i64),
-                )
+                Some(clamp_local(self.rest[index].0, self.first))
             } else {
-                Some(
-                    self.rest[index]
-                        .0
-                        .saturating_add(self.rest[index - 1].1.utc_offset as i64)
-                        .saturating_add(self.rest[index - 1].1.dst_offset as i64),
-                )
+                Some(clamp_local(self.rest[index].0, self.rest[index - 1].1))
             },
         }
     }
@@ -511,5 +501,36 @@ mod tests {
         assert_eq!(set.local_span(1).begin, Some(i64::MIN));
         assert_eq!(set.local_span(1).end, Some(i64::MAX - 3610));
         assert_eq!(set.local_span(2).begin, Some(i64::MAX));
+
+        // Opposite-signed UTC and DST offsets must be combined in i128 before clamping once.
+        let opposite = FixedTimespanSet {
+            first: FixedTimespan {
+                utc_offset: -3600,
+                dst_offset: 7200,
+                name: Some("MIN_OPP"),
+            },
+            rest: &[
+                (
+                    i64::MIN + 10,
+                    FixedTimespan {
+                        utc_offset: -3600,
+                        dst_offset: 7200,
+                        name: Some("LOW_OPP"),
+                    },
+                ),
+                (
+                    i64::MAX - 10,
+                    FixedTimespan {
+                        utc_offset: 3600,
+                        dst_offset: -7200,
+                        name: Some("HIGH_OPP"),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(opposite.local_span(0).end, Some(i64::MIN + 3610));
+        assert_eq!(opposite.local_span(1).begin, Some(i64::MIN + 3610));
+        assert_eq!(opposite.local_span(1).end, Some(i64::MAX));
+        assert_eq!(opposite.local_span(2).begin, Some(i64::MAX - 3610));
     }
 }

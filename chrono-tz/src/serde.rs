@@ -1,4 +1,4 @@
-use core::fmt;
+use core::fmt::{self, Write as _};
 use serde_core::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::timezones::Tz;
@@ -35,16 +35,25 @@ struct SerdeError<'a>(&'a str);
 
 impl fmt::Display for SerdeError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        const MAX_INPUT_LEN: usize = 128;
-        if self.0.len() <= MAX_INPUT_LEN {
-            write!(f, "failed to parse timezone: '{}'", self.0)
-        } else {
-            let mut end = MAX_INPUT_LEN;
-            while !self.0.is_char_boundary(end) {
-                end -= 1;
+        const MAX_REFLECTED_BYTES: usize = 128;
+        f.write_str("failed to parse timezone: '")?;
+        let mut written = 0usize;
+        let mut truncated = false;
+        for ch in self.0.chars() {
+            let esc_len: usize = ch.escape_debug().map(char::len_utf8).sum();
+            if written + esc_len > MAX_REFLECTED_BYTES {
+                truncated = true;
+                break;
             }
-            write!(f, "failed to parse timezone: '{}...'", &self.0[..end])
+            for esc_ch in ch.escape_debug() {
+                f.write_char(esc_ch)?;
+            }
+            written += esc_len;
         }
+        if truncated {
+            f.write_str("...")?;
+        }
+        f.write_char('\'')
     }
 }
 
@@ -84,5 +93,17 @@ mod tests {
         let utf8_long: &'static str = Box::leak(s.into_boxed_str());
         let expected_utf8 = format!("failed to parse timezone: '{}...'", "a".repeat(127));
         assert_de_tokens_error::<Tz>(&[Token::Str(utf8_long)], &expected_utf8);
+    }
+
+    #[test]
+    fn serde_de_error_escapes_control_chars_within_budget() {
+        assert_de_tokens_error::<Tz>(
+            &[Token::Str("bad\n\x1b[31m\0'zone")],
+            r"failed to parse timezone: 'bad\n\u{1b}[31m\0\'zone'",
+        );
+
+        let esc_flood: &'static str = Box::leak("\x1b".repeat(30).into_boxed_str());
+        let expected_esc = format!("failed to parse timezone: '{}...'", r"\u{1b}".repeat(21));
+        assert_de_tokens_error::<Tz>(&[Token::Str(esc_flood)], &expected_esc);
     }
 }

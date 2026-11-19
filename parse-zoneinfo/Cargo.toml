@@ -13,6 +13,7 @@ license = "MIT"
 keywords = ["date", "time", "timezone", "zone", "calendar"]
 exclude = [
     "examples/asia",
+    "examples/benchmark.rs",
     "tests/snapshots",
     "tests/snapshot.rs",
 ]
