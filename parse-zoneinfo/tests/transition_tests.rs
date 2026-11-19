@@ -1,8 +1,10 @@
-extern crate parse_zoneinfo;
-
-use parse_zoneinfo::line::{ChangeTime, DaySpec, Line, Month, TimeSpec, TimeType, Weekday, Year};
-use parse_zoneinfo::table::{Format, RuleInfo, Saving, Table, TableBuilder, ZoneInfo};
-use parse_zoneinfo::transitions::{FixedTimespan, FixedTimespanSet, TableTransitions};
+use sad_parse_zoneinfo::line::{
+    ChangeTime, DaySpec, Line, Month, TimeSpec, TimeType, Weekday, Year,
+};
+use sad_parse_zoneinfo::table::{Format, RuleInfo, Saving, Table, TableBuilder, ZoneInfo};
+use sad_parse_zoneinfo::transitions::{
+    FixedTimespan, FixedTimespanSet, TableTransitions, TransitionError,
+};
 
 #[test]
 fn no_transitions() {
@@ -799,13 +801,37 @@ fn tripoli() {
 
 #[test]
 fn dushanbe() {
-    static ZONEINFO: &str = r#"
+    static INCOMPLETE_ZONEINFO: &str = r#"
 Zone    Asia/Dushanbe   4:35:12 -   LMT 1924 May  2
             5:00    1:00    +05/+06 1991 Sep  9  2:00s
 "#;
 
     let mut table = TableBuilder::new();
-    for line in ZONEINFO.lines() {
+    for line in INCOMPLETE_ZONEINFO.lines() {
+        let line = Line::new(line).unwrap();
+        match line {
+            Line::Zone(zone) => table.add_zone_line(zone).unwrap(),
+            Line::Continuation(cont) => table.add_continuation_line(cont).unwrap(),
+            Line::Rule(rule) => table.add_rule_line(rule).unwrap(),
+            Line::Link(link) => table.add_link_line(link).unwrap(),
+            Line::Space => {}
+        }
+    }
+    let incomplete_table = table.build();
+    assert_eq!(
+        incomplete_table.try_timespans("Asia/Dushanbe"),
+        Err(TransitionError::UnexpectedTerminalUntil)
+    );
+    assert!(incomplete_table.timespans("Asia/Dushanbe").is_none());
+
+    static COMPLETE_ZONEINFO: &str = r#"
+Zone    Asia/Dushanbe   4:35:12 -   LMT 1924 May  2
+            5:00    1:00    +05/+06 1991 Sep  9  2:00s
+            5:00    -       +05
+"#;
+
+    let mut table = TableBuilder::new();
+    for line in COMPLETE_ZONEINFO.lines() {
         let line = Line::new(line).unwrap();
         match line {
             Line::Zone(zone) => table.add_zone_line(zone).unwrap(),
@@ -816,5 +842,6 @@ Zone    Asia/Dushanbe   4:35:12 -   LMT 1924 May  2
         }
     }
     let table = table.build();
+    let _ = table.try_timespans("Asia/Dushanbe").unwrap();
     let _ = table.timespans("Asia/Dushanbe").unwrap();
 }

@@ -1,13 +1,22 @@
 [package]
-name = "parse-zoneinfo"
-version = "0.4.0"
+name = "sad-parse-zoneinfo"
+version = "0.5.1"
 edition = "2021"
-rust-version = "1.56.0"
+rust-version = "1.66.0"
+authors = ["Sadco Security Team", "Benjamin Sago", "The chrono-tz contributors"]
 description = "Parse zoneinfo files from the IANA database"
-repository = "https://github.com/chronotope/chrono-tz"
+homepage = "https://github.com/sadco-io/sad-chrono-tz"
+repository = "https://github.com/sadco-io/sad-chrono-tz"
+documentation = "https://docs.rs/sad-parse-zoneinfo/"
 readme = "README.md"
 license = "MIT"
 keywords = ["date", "time", "timezone", "zone", "calendar"]
+exclude = [
+    "examples/asia",
+    "examples/benchmark.rs",
+    "tests/snapshots",
+    "tests/snapshot.rs",
+]
 
 [dev-dependencies]
 insta = "1.38"

@@ -1,0 +1,216 @@
+name: lint
+
+on:
+  push:
+    branches: [main, 0.10.x]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo fmt --all -- --check --color=always
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check --color=always
+      - run: cargo fmt --manifest-path chrono-tz/tests/check-rename/Cargo.toml -- --check --color=always
+      - run: |
+          cargo clippy --workspace --all-targets --color=always -- -D warnings
+      - run: |
+          cargo clippy --workspace --all-features --all-targets --color=always -- -D warnings
+      - run: |
+          cargo clippy --workspace --no-default-features --all-targets --color=always -- -D warnings
+      - run: |
+          cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --color=always -- -D warnings
+
+  actionlint:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - run: '"$(go env GOPATH)/bin/actionlint" -color'
+
+  cargo-deny:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2
+        with:
+          arguments: --all-features --workspace
+
+  cargo-deny-scheduled:
+    name: cargo-deny (scheduled)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2
+        with:
+          arguments: --all-features --workspace
+
+  check-doc:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: nightly
+      - run: cargo install --locked cargo-deadlinks@0.8.1
+      - run: cargo deadlinks -- --workspace --all-features
+      - run: cargo +stable doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+      - run: cargo +nightly doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings --cfg docsrs"
+
+  semver:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      # Keep rust-toolchain and cargo-semver-checks pinned together:
+      # cargo-semver-checks only reads the rustdoc JSON formats it was built for.
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: 1.100.0
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-semver-checks@0.51.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Check semver compatibility against renamed chrono-tz 0.10.4 baseline
+        run: |
+          rm -rf /tmp/semver-baseline
+          git clone --depth 1 --recurse-submodules --branch v0.10.4 https://github.com/chronotope/chrono-tz.git /tmp/semver-baseline
+          python3 - <<'PY'
+          import pathlib
+          base = pathlib.Path("/tmp/semver-baseline")
+          for p in [base / "chrono-tz" / "Cargo.toml", base / "chrono-tz-build" / "Cargo.toml", base / "parse-zoneinfo" / "Cargo.toml"]:
+              txt = p.read_text()
+              txt = txt.replace('name = "chrono-tz"', 'name = "sad-chrono-tz"')
+              txt = txt.replace('name = "chrono-tz-build"', 'name = "sad-chrono-tz-build"')
+              txt = txt.replace('name = "parse-zoneinfo"', 'name = "sad-parse-zoneinfo"')
+              txt = txt.replace('chrono = { version = "0.4.25", default-features = false }', 'sad-chrono = { version = "0.4.48", default-features = false }')
+              txt = txt.replace('chrono = { version = "0.4", default-features = false, features = ["alloc"] }', 'sad-chrono = { version = "0.4.48", default-features = false, features = ["alloc"] }')
+              txt = txt.replace('parse-zoneinfo = { path = "../parse-zoneinfo", version = "0.4.0" }', 'parse-zoneinfo = { package = "sad-parse-zoneinfo", path = "../parse-zoneinfo", version = "0.4.0" }')
+              txt = txt.replace('chrono-tz-build = { path = "../chrono-tz-build", version = "0.5", optional = true }', 'chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.5", optional = true }')
+              txt = txt.replace('chrono-tz-build = { path = "../chrono-tz-build", version = "0.5" }', 'chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.5" }')
+              p.write_text(txt)
+          for f in (base / "chrono-tz" / "src").rglob("*.rs"):
+              t = f.read_text().replace("use chrono::", "use sad_chrono::")
+              f.write_text(t)
+          PY
+          cargo +1.100.0 semver-checks check-release --manifest-path chrono-tz/Cargo.toml \
+            --baseline-root /tmp/semver-baseline --release-type minor --default-features
+          cargo +1.100.0 semver-checks check-release --manifest-path chrono-tz/Cargo.toml \
+            --baseline-root /tmp/semver-baseline --release-type minor \
+            --only-explicit-features --features default,serde,arbitrary,case-insensitive,filter-by-regex
+
+  package:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Verify package file lists and zero symlinks
+        run: |
+          for pkg_spec in \
+            "sad-parse-zoneinfo:NOTICE SECURITY.md LICENSE-MIT README.md src/lib.rs" \
+            "sad-chrono-tz-build:NOTICE SECURITY.md LICENSE-MIT LICENSE-APACHE README.md src/lib.rs" \
+            "sad-chrono-tz:NOTICE SECURITY.md LICENSE-MIT LICENSE-APACHE README.md src/lib.rs tz/africa tz/antarctica tz/asia tz/australasia tz/backward tz/etcetera tz/europe tz/northamerica tz/southamerica tz/NEWS"
+          do
+            pkg="${pkg_spec%%:*}"
+            reqs="${pkg_spec#*:}"
+            files=$(cargo package -p "$pkg" --list)
+            for required in $reqs; do
+              echo "$files" | grep -qx "$required" || { echo "missing from $pkg: $required"; exit 1; }
+            done
+          done
+      - name: Verify offline vendored packaging for all 3 crates
+        run: |
+          cargo vendor
+          for local_dep in sad-parse-zoneinfo sad-chrono-tz-build; do
+            cargo package -p "$local_dep" --allow-dirty \
+              --config "source.vendored-sources.directory = 'vendor'" \
+              --config "source.crates-io.replace-with = 'vendored-sources'"
+            tar xzf target/package/"$local_dep"-*.crate -C vendor/
+            pushd vendor/"$local_dep"-* >/dev/null
+            echo '{"files":{}}' > .cargo-checksum.json
+            popd >/dev/null
+          done
+          cargo package -p sad-chrono-tz --allow-dirty \
+            --config "source.vendored-sources.directory = 'vendor'" \
+            --config "source.crates-io.replace-with = 'vendored-sources'"
+          test -z "$(find target/package -type l)"
+          rm -rf /tmp/pkg-verify
+          mkdir -p /tmp/pkg-verify
+          tar xzf target/package/sad-chrono-tz-[0-9]*.crate -C /tmp/pkg-verify
+          cargo check --manifest-path /tmp/pkg-verify/sad-chrono-tz-[0-9]*/Cargo.toml \
+            --all-features --offline \
+            --config "source.vendored-sources.directory = '$PWD/vendor'" \
+            --config "source.crates-io.replace-with = 'vendored-sources'"
+          rm -rf vendor /tmp/pkg-verify
+
+  fuzz:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: nightly
+      # Build from source instead of taiki-e/install-action: its binstall fallback
+      # ships a musl cargo-fuzz, which targets musl and breaks the sanitizer build.
+      - run: cargo install --locked cargo-fuzz@0.13.2
+      - run: cargo fuzz run fuzz_parse_line -- -max_total_time=60
+        working-directory: fuzz
+      - run: cargo fuzz run fuzz_parse_table -- -max_total_time=60
+        working-directory: fuzz
+      - run: cargo fuzz run fuzz_tz_from_str -- -max_total_time=60
+        working-directory: fuzz
+      - run: cargo fuzz run fuzz_tz_serde -- -max_total_time=60
+        working-directory: fuzz

@@ -3,7 +3,7 @@
 
 use core::panic::PanicInfo;
 
-use chrono_tz::US::Pacific;
+use sad_chrono_tz::US::Pacific;
 use cortex_m_rt::entry;
 
 #[panic_handler]

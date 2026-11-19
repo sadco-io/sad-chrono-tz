@@ -1,20 +1,13 @@
 use core::cmp::Ordering;
 use core::fmt::{Debug, Display, Error, Formatter, Write};
 
-use chrono::{
+use sad_chrono::{
     DateTime, Duration, FixedOffset, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset,
     TimeZone,
 };
 
 use crate::binary_search::binary_search;
 use crate::timezones::Tz;
-
-/// Returns [`Tz::UTC`].
-impl Default for Tz {
-    fn default() -> Self {
-        Tz::UTC
-    }
-}
 
 /// An Offset that applies for a period of time
 ///
@@ -32,7 +25,7 @@ pub struct FixedTimespan {
 
 impl Offset for FixedTimespan {
     fn fix(&self) -> FixedOffset {
-        FixedOffset::east_opt(self.utc_offset + self.dst_offset).unwrap()
+        FixedOffset::east_opt(self.utc_offset.saturating_add(self.dst_offset)).unwrap()
     }
 }
 
@@ -41,26 +34,20 @@ impl Display for FixedTimespan {
         if let Some(name) = self.name {
             return write!(f, "{name}");
         }
-        let offset = self.utc_offset + self.dst_offset;
-        let (sign, off) = if offset < 0 {
-            ('-', -offset)
-        } else {
-            ('+', offset)
-        };
+        let offset = self.utc_offset as i64 + self.dst_offset as i64;
+        let sign = if offset < 0 { '-' } else { '+' };
+        let off = offset.unsigned_abs();
 
         let minutes = off / 60;
-        let secs = (off % 60) as u8;
-        let mins = (minutes % 60) as u8;
-        let hours = (minutes / 60) as u8;
-
-        assert!(
-            secs == 0,
-            "numeric names are not used if the offset has fractional minutes"
-        );
+        let secs = off % 60;
+        let mins = minutes % 60;
+        let hours = minutes / 60;
 
         f.write_char(sign)?;
         write!(f, "{hours:02}")?;
-        if mins != 0 {
+        if secs != 0 {
+            write!(f, "{mins:02}{secs:02}")?;
+        } else if mins != 0 {
             write!(f, "{mins:02}")?;
         }
         Ok(())
@@ -70,6 +57,13 @@ impl Display for FixedTimespan {
 impl Debug for FixedTimespan {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         Display::fmt(self, f)
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for FixedTimespan {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{:?}", self.name);
     }
 }
 
@@ -85,14 +79,13 @@ pub struct TzOffset {
 /// in effect (such as DST) at a given time.
 ///
 /// ```
-/// # extern crate chrono;
-/// # extern crate chrono_tz;
-/// use chrono::{Duration, Offset, TimeZone};
-/// use chrono_tz::Europe::London;
-/// use chrono_tz::OffsetComponents;
+/// # #[cfg(not(feature = "filter-by-regex"))]
+/// # {
+/// use sad_chrono::{Duration, Offset, TimeZone};
+/// use sad_chrono_tz::Europe::London;
+/// use sad_chrono_tz::OffsetComponents;
 ///
-/// # fn main() {
-/// let london_time = London.ymd(2016, 5, 10).and_hms(12, 0, 0);
+/// let london_time = London.with_ymd_and_hms(2016, 5, 10, 12, 0, 0).unwrap();
 ///
 /// // London typically has zero offset from UTC, but has a 1h adjustment forward
 /// // when summer time is in effect.
@@ -120,19 +113,18 @@ pub trait OffsetComponents {
 /// various situations.
 ///
 /// ```
-/// # extern crate chrono;
-/// # extern crate chrono_tz;
-/// use chrono::{Duration, Offset, TimeZone};
-/// use chrono_tz::Europe::London;
-/// use chrono_tz::OffsetName;
+/// # #[cfg(not(feature = "filter-by-regex"))]
+/// # {
+/// use sad_chrono::TimeZone;
+/// use sad_chrono_tz::Europe::London;
+/// use sad_chrono_tz::OffsetName;
 ///
-/// # fn main() {
-/// let london_time = London.ymd(2016, 2, 10).and_hms(12, 0, 0);
+/// let london_time = London.with_ymd_and_hms(2016, 2, 10, 12, 0, 0).unwrap();
 /// assert_eq!(london_time.offset().tz_id(), "Europe/London");
 /// // London is normally on GMT
 /// assert_eq!(london_time.offset().abbreviation(), Some("GMT"));
 ///
-/// let london_summer_time = London.ymd(2016, 5, 10).and_hms(12, 0, 0);
+/// let london_summer_time = London.with_ymd_and_hms(2016, 5, 10, 12, 0, 0).unwrap();
 /// // The TZ ID remains constant year round
 /// assert_eq!(london_summer_time.offset().tz_id(), "Europe/London");
 /// // During the summer, this becomes British Summer Time
@@ -204,6 +196,13 @@ impl Debug for TzOffset {
     }
 }
 
+#[cfg(feature = "defmt")]
+impl defmt::Format for TzOffset {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{:?}", self.offset);
+    }
+}
+
 /// Represents the span of time that a given rule is valid for.
 /// Note that I have made the assumption that all ranges are
 /// left-inclusive and right-exclusive - that is to say,
@@ -272,27 +271,23 @@ impl FixedTimespanSet {
 
     fn local_span(&self, index: usize) -> Span {
         debug_assert!(index < self.len());
+        let clamp_local = |ts: i64, span: FixedTimespan| -> i64 {
+            (ts as i128 + span.utc_offset as i128 + span.dst_offset as i128)
+                .clamp(i64::MIN as i128, i64::MAX as i128) as i64
+        };
         Span {
             begin: if index == 0 {
                 None
             } else {
                 let span = self.rest[index - 1];
-                Some(span.0 + span.1.utc_offset as i64 + span.1.dst_offset as i64)
+                Some(clamp_local(span.0, span.1))
             },
             end: if index == self.rest.len() {
                 None
             } else if index == 0 {
-                Some(
-                    self.rest[index].0
-                        + self.first.utc_offset as i64
-                        + self.first.dst_offset as i64,
-                )
+                Some(clamp_local(self.rest[index].0, self.first))
             } else {
-                Some(
-                    self.rest[index].0
-                        + self.rest[index - 1].1.utc_offset as i64
-                        + self.rest[index - 1].1.dst_offset as i64,
-                )
+                Some(clamp_local(self.rest[index].0, self.rest[index - 1].1))
             },
         }
     }
@@ -349,7 +344,7 @@ impl TimeZone for Tz {
         // technically correct and returning Ambiguous(_,_) on days when the clock changes. The
         // alternative is painful errors when computing unambiguous times such as
         // `TimeZone.ymd(ambiguous_date).hms(unambiguous_time)`.
-        use chrono::LocalResult::*;
+        use sad_chrono::LocalResult::*;
         match (earliest, latest) {
             (result @ Single(_), _) => result,
             (_, result @ Single(_)) => result,
@@ -474,5 +469,74 @@ impl GapInfo {
         };
 
         Some(Self { begin, end })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_span_extreme_no_overflow() {
+        let set = FixedTimespanSet {
+            first: FixedTimespan {
+                utc_offset: -3600,
+                dst_offset: 0,
+                name: Some("MIN"),
+            },
+            rest: &[
+                (
+                    i64::MIN + 10,
+                    FixedTimespan {
+                        utc_offset: -3600,
+                        dst_offset: 0,
+                        name: Some("LOW"),
+                    },
+                ),
+                (
+                    i64::MAX - 10,
+                    FixedTimespan {
+                        utc_offset: 3600,
+                        dst_offset: 3600,
+                        name: Some("HIGH"),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(set.local_span(0).end, Some(i64::MIN));
+        assert_eq!(set.local_span(1).begin, Some(i64::MIN));
+        assert_eq!(set.local_span(1).end, Some(i64::MAX - 3610));
+        assert_eq!(set.local_span(2).begin, Some(i64::MAX));
+
+        // Opposite-signed UTC and DST offsets must be combined in i128 before clamping once.
+        let opposite = FixedTimespanSet {
+            first: FixedTimespan {
+                utc_offset: -3600,
+                dst_offset: 7200,
+                name: Some("MIN_OPP"),
+            },
+            rest: &[
+                (
+                    i64::MIN + 10,
+                    FixedTimespan {
+                        utc_offset: -3600,
+                        dst_offset: 7200,
+                        name: Some("LOW_OPP"),
+                    },
+                ),
+                (
+                    i64::MAX - 10,
+                    FixedTimespan {
+                        utc_offset: 3600,
+                        dst_offset: -7200,
+                        name: Some("HIGH_OPP"),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(opposite.local_span(0).end, Some(i64::MIN + 3610));
+        assert_eq!(opposite.local_span(1).begin, Some(i64::MIN + 3610));
+        assert_eq!(opposite.local_span(1).end, Some(i64::MAX));
+        assert_eq!(opposite.local_span(2).begin, Some(i64::MAX - 3610));
     }
 }

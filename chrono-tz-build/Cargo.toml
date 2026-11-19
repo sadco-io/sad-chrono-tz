@@ -1,15 +1,25 @@
 [package]
-name = "chrono-tz-build"
-version = "0.5.0"
+name = "sad-chrono-tz-build"
+version = "0.5.1"
 edition = "2021"
-rust-version = "1.65"
-description = "internal build script for chrono-tz"
+rust-version = "1.66.0"
+authors = ["Sadco Security Team", "The chrono-tz contributors"]
+description = "Internal build script for sad-chrono-tz"
+homepage = "https://github.com/sadco-io/sad-chrono-tz"
+repository = "https://github.com/sadco-io/sad-chrono-tz"
+documentation = "https://docs.rs/sad-chrono-tz-build/"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["script", "chrono-tz", "timezone", "iana"]
 categories = ["development-tools::build-utils"]
-repository = "https://github.com/chronotope/chrono-tz"
-documentation = "https://docs.rs/chrono-tz-build"
+include = [
+  "src/*.rs",
+  "LICENSE-MIT",
+  "LICENSE-APACHE",
+  "NOTICE",
+  "SECURITY.md",
+  "README.md",
+]
 
 [features]
 filter-by-regex = ["regex"]
@@ -17,10 +27,10 @@ case-insensitive = ["uncased", "phf_shared/uncased"]
 regex = ["dep:regex"]
 
 [dependencies]
-parse-zoneinfo = { path = "../parse-zoneinfo", version = "0.4.0" }
+parse-zoneinfo = { package = "sad-parse-zoneinfo", path = "../parse-zoneinfo", version = "0.5.1" }
 regex = { default-features = false, version = "1", optional = true }
-phf_codegen = { version = "0.12", default-features = false }
+phf_codegen = { version = "0.13", default-features = false }
 uncased = { version = "0.9", optional = true, default-features = false }
 
 # needed only to forward feature for uncased
-phf_shared = { version = "0.12", default-features = false, optional = true }
+phf_shared = { version = "0.13", default-features = false, optional = true }

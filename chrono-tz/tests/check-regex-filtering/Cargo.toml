@@ -5,7 +5,7 @@ authors = ["Philip Daniels <Philip.Daniels1971@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-chrono = "0.4"
-chrono-tz = { path = "../../", default-features = false, features = [ "filter-by-regex" ] }
+sad-chrono = "0.4.48"
+sad-chrono-tz = { path = "../../", default-features = false, features = [ "filter-by-regex" ] }
 
 [workspace]

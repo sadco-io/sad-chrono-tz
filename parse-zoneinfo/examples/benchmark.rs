@@ -1,7 +1,5 @@
-extern crate parse_zoneinfo;
-
-use parse_zoneinfo::line::Line;
-use parse_zoneinfo::table::TableBuilder;
+use sad_parse_zoneinfo::line::Line;
+use sad_parse_zoneinfo::table::TableBuilder;
 
 fn main() {
     let asia = std::fs::read_to_string("examples/asia").unwrap();

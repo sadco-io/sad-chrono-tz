@@ -37,42 +37,46 @@ use crate::table::Table;
 /// Trait to put the `structure` method on Tables.
 pub trait Structure {
     /// Returns an iterator over the structure of this table.
-    fn structure(&self) -> TableStructure;
+    fn structure(&self) -> TableStructure<'_>;
 }
 
 impl Structure for Table {
-    fn structure(&self) -> TableStructure {
-        let mut mappings = BTreeMap::new();
+    fn structure(&self) -> TableStructure<'_> {
+        build_tree(
+            self.zonesets
+                .keys()
+                .chain(self.links.keys())
+                .map(|s| s.as_str()),
+        )
+    }
+}
 
-        for key in self.zonesets.keys().chain(self.links.keys()) {
-            // Extract the name from the *last* slash. So
-            // `America/Kentucky/Louisville` is split into
-            // `America/Kentucky` and `Louisville` components.
-            let last_slash = match key.rfind('/') {
-                Some(pos) => pos,
-                None => continue,
-            };
+pub fn build_tree<'a>(entries: impl Iterator<Item = &'a str>) -> TableStructure<'a> {
+    let mut mappings = BTreeMap::new();
 
-            // Split the string around the slash, which gets removed.
-            let parent = &key[..last_slash];
-            {
-                let set = mappings.entry(parent).or_insert_with(BTreeSet::new);
-                set.insert(Child::TimeZone(&key[last_slash + 1..]));
-            }
-
-            // If the *parent* name still has a slash in it, then this is
-            // a time zone of the form `America/Kentucky/Louisville`. We
-            // need to make sure that `America` now has a `Kentucky`
-            // child, too.
-            if let Some(first_slash) = parent.find('/') {
-                let grandparent = &parent[..first_slash];
-                let set = mappings.entry(grandparent).or_insert_with(BTreeSet::new);
-                set.insert(Child::Submodule(&parent[first_slash + 1..]));
-            }
+    for key in entries {
+        if !key.contains('/') || key.split('/').any(str::is_empty) {
+            continue;
         }
 
-        TableStructure { mappings }
+        let mut remaining = key;
+        while let Some(last_slash) = remaining.rfind('/') {
+            let parent = &remaining[..last_slash];
+            let child_name = &remaining[last_slash + 1..];
+            let child = if remaining.len() == key.len() {
+                Child::TimeZone(child_name)
+            } else {
+                Child::Submodule(child_name)
+            };
+            mappings
+                .entry(parent)
+                .or_insert_with(BTreeSet::new)
+                .insert(child);
+            remaining = parent;
+        }
     }
+
+    TableStructure { mappings }
 }
 
 /// The structure of a set of time zone names.
@@ -209,5 +213,33 @@ mod test {
             })
         );
         assert_eq!(structure.next(), None);
+    }
+
+    #[test]
+    fn deep_hierarchy_and_empty_segments() {
+        let mut table = Table::default();
+        table.zonesets.insert("a/b/c/d".to_owned(), Vec::new());
+        table.zonesets.insert("/leading".to_owned(), Vec::new());
+        table.zonesets.insert("trailing/".to_owned(), Vec::new());
+        table.zonesets.insert("a//empty".to_owned(), Vec::new());
+
+        let entries: Vec<_> = table.structure().into_iter().collect();
+        assert_eq!(
+            entries,
+            vec![
+                TableStructureEntry {
+                    name: "a",
+                    children: vec![Child::Submodule("b")],
+                },
+                TableStructureEntry {
+                    name: "a/b",
+                    children: vec![Child::Submodule("c")],
+                },
+                TableStructureEntry {
+                    name: "a/b/c",
+                    children: vec![Child::TimeZone("d")],
+                },
+            ]
+        );
     }
 }

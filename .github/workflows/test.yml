@@ -1,0 +1,181 @@
+name: All Tests and Builds
+
+on:
+  push:
+    branches: [main, 0.10.x]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo test --workspace --color=always -- --color=always
+      - if: runner.os != 'Windows'
+        run: cargo test --workspace --all-features --color=always -- --color=always
+      # defmt emits embedded logger symbols (_defmt_acquire, etc.) that MSVC link.exe
+      # refuses to link into a host test binary without a defmt logger crate; check
+      # defmt compilation on Windows and test all non-defmt features.
+      - if: runner.os == 'Windows'
+        run: |
+          cargo check --workspace --all-features --all-targets --color=always
+          cargo test -p sad-parse-zoneinfo -p sad-chrono-tz-build --all-features --color=always -- --color=always
+          cargo test -p sad-chrono-tz --features "std serde arbitrary case-insensitive filter-by-regex" --color=always -- --color=always
+      - run: cargo test --workspace --no-default-features --color=always -- --color=always
+
+  rust_msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: "1.66.0"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # Cargo < 1.84 has no MSRV-aware resolver; generate a v3 lockfile pinned to
+      # Rust 1.66-compatible versions (e.g. getrandom 0.3, arbitrary 1.4, syn 2.0.48).
+      # `defmt >= 1.0` requires Rust 1.81+ (via defmt-parser -> thiserror 2), so check
+      # all MSRV-compatible features explicitly instead of `--all-features`.
+      - run: |
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +stable generate-lockfile
+          grep -q '^version = 3$' Cargo.lock
+      - run: cargo +1.66.0 check --locked --workspace --lib
+      - run: cargo +1.66.0 check --locked -p sad-chrono-tz --lib --features std,serde,filter-by-regex,case-insensitive,arbitrary
+      - run: cargo +1.66.0 check --locked -p sad-chrono-tz-build --lib --all-features
+      - run: cargo +1.66.0 check --locked -p sad-parse-zoneinfo --lib --all-features
+
+  rust_versions:
+    strategy:
+      matrix:
+        rust_version: ["stable", "beta", "nightly"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ matrix.rust_version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
+      - run: cargo test --workspace --all-features --color=always -- --color=always
+
+  features_check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-hack@0.6.46
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: |
+          cargo hack check --workspace --feature-powerset --all-targets
+        env:
+          RUSTFLAGS: "-D warnings"
+      - run: cargo test -p sad-chrono-tz --features serde
+      - run: cargo test -p sad-chrono-tz --features case-insensitive
+      - run: cargo test -p sad-chrono-tz --features arbitrary
+      - run: cargo test -p sad-chrono-tz --features defmt
+
+  no_std:
+    strategy:
+      matrix:
+        target: [thumbv7m-none-eabi, thumbv6m-none-eabi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo build --target ${{ matrix.target }} --no-default-features --color=always
+        working-directory: chrono-tz/tests/check-nostd
+      - run: cargo build --target ${{ matrix.target }} --features serde1 --color=always
+        working-directory: chrono-tz/tests/check-nostd
+      - run: cargo build --target ${{ matrix.target }} --features case-insensitive --color=always
+        working-directory: chrono-tz/tests/check-nostd
+      - run: cargo build --target ${{ matrix.target }} --features defmt --color=always
+        working-directory: chrono-tz/tests/check-nostd
+
+  regex_filtering:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: ./bin/test-regex-filtering.sh
+
+  rename_smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo test --manifest-path chrono-tz/tests/check-rename/Cargo.toml --color=always
+
+  cross-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - run: cargo install --locked cross@0.2.5
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cross test --workspace --all-features --target i686-unknown-linux-gnu --color=always
+
+  test_wasm:
+    strategy:
+      matrix:
+        target: [wasm32-unknown-unknown, wasm32-wasip1]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo check --workspace --target ${{ matrix.target }} --all-targets --all-features

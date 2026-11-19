@@ -8,10 +8,11 @@ resolver = "2"
 
 [dependencies]
 cortex-m-rt = "0.7.0"
-chrono-tz = { path = "../../", default-features = false }
+sad-chrono-tz = { path = "../../", default-features = false }
 
 [features]
-serde1 = ["chrono-tz/serde"]
-case-insensitive = ["chrono-tz/case-insensitive"]
+serde1 = ["sad-chrono-tz/serde"]
+case-insensitive = ["sad-chrono-tz/case-insensitive"]
+defmt = ["sad-chrono-tz/defmt"]
 
 [workspace]

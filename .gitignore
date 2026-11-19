@@ -1,2 +1,7 @@
 target
 Cargo.lock
+.tool-versions
+
+# for jetbrains users
+.idea/
+.env

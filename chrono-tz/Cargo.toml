@@ -1,14 +1,16 @@
 [package]
-name = "chrono-tz"
-version = "0.10.4"
+name = "sad-chrono-tz"
+version = "0.10.5"
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.66.0"
 build = "build.rs"
-description = "TimeZone implementations for chrono from the IANA database"
+authors = ["Sadco Security Team", "The chrono-tz contributors"]
+description = "TimeZone implementations for sad-chrono from the IANA database"
 keywords = ["date", "time", "timezone", "zone", "iana"]
 categories = ["date-and-time"]
-repository = "https://github.com/chronotope/chrono-tz"
-documentation = "https://docs.rs/chrono-tz"
+homepage = "https://github.com/sadco-io/sad-chrono-tz"
+repository = "https://github.com/sadco-io/sad-chrono-tz"
+documentation = "https://docs.rs/sad-chrono-tz/"
 readme = "../README.md"
 license = "MIT OR Apache-2.0"
 include = [
@@ -16,7 +18,10 @@ include = [
   "src/prebuilt/*.rs",
   "tests/*.rs",
   "build.rs",
-  "LICENSE",
+  "LICENSE-MIT",
+  "LICENSE-APACHE",
+  "NOTICE",
+  "SECURITY.md",
   "tz/africa",
   "tz/antarctica",
   "tz/asia",
@@ -31,26 +36,27 @@ include = [
 
 [dependencies]
 arbitrary = { version = "1.2", optional = true, features = ["derive"] }
-chrono = { version = "0.4.25", default-features = false }
-serde = { version = "1.0.99", optional = true, default-features = false }
-phf = { version = "0.12", default-features = false }
+sad-chrono = { version = "0.4.48", default-features = false }
+defmt = { version = "1.0.1", optional = true }
+serde_core = { version = "1.0.220", optional = true, default-features = false }
+phf = { version = "0.13", default-features = false }
 uncased = { version = "0.9", optional = true, default-features = false }
 
 [features]
 default = ["std"]
 std = []
-serde = ["dep:serde"]
+defmt = ["dep:defmt"]
+serde = ["dep:serde_core"]
 filter-by-regex = ["chrono-tz-build", "chrono-tz-build/filter-by-regex"]
 case-insensitive = ["dep:uncased", "chrono-tz-build", "chrono-tz-build/case-insensitive", "phf/uncased"]
 
 [build-dependencies]
-chrono-tz-build = { path = "../chrono-tz-build", version = "0.5", optional = true }
+chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.5.1", optional = true }
 
 [dev-dependencies]
 serde_test = "1"
-chrono = { version = "0.4", default-features = false, features = ["alloc"] }
-chrono-tz-build = { path = "../chrono-tz-build", version = "0.5" }
-tzfile = "0.1"
+sad-chrono = { version = "0.4.48", default-features = false, features = ["alloc"] }
+chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.5.1" }
 
 [package.metadata.docs.rs]
 all-features = true
