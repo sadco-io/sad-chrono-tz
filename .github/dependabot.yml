@@ -3,6 +3,7 @@
 # dependency can change the public API, wire formats, or MSRV. Dependency
 # updates are reviewed manually; Dependabot security alerts stay enabled.
 # Workflow actions are SHA-pinned; Dependabot bumps both the commit SHAs and `# vX` comments.
+# Dependabot reads this file only from the default branch, so `0.10.x` needs an entry here too.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -10,3 +11,8 @@ updates:
     schedule:
       interval: "weekly"
     target-branch: "main"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "0.10.x"
