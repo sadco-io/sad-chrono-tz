@@ -40,9 +40,13 @@ const DIRECTORY_ROOT_RESERVED: &[&str] = &[
     "OffsetComponents",
     "OffsetName",
     "TzOffset",
+    "TzOffsetIter",
+    "ArchivedTz",
+    "ArchivedTzOffset",
     "prebuilt",
     "binary_search",
     "timezone_impl",
+    "rkyv",
     "serde",
 ];
 
@@ -51,6 +55,7 @@ const DIRECTORY_SUBMODULE_RESERVED: &[&str] = &["Tz", "IANA_TZDB_VERSION"];
 
 /// Identifiers declared or imported in `timezones.rs` (including inside `TimeSpans::timespans`).
 const TIMEZONES_RESERVED_IDENTS: &[&str] = &[
+    "ABBREVIATIONS",
     "Tz",
     "ParseError",
     "TZ_VARIANTS",
@@ -101,6 +106,15 @@ fn strip_comments(mut line: String) -> String {
     line
 }
 
+/// Minimum Unix timestamp representable by `sad_chrono::DateTime<Utc>`.
+const MIN_CHRONO_UTC_TIMESTAMP: i64 = -8_334_601_228_800;
+/// Maximum Unix timestamp representable by `sad_chrono::DateTime<Utc>`.
+const MAX_CHRONO_UTC_TIMESTAMP: i64 = 8_210_266_876_799;
+/// Minimum signed 20-bit offset component (`-(1 << 19)`).
+const PACKED_OFFSET_MIN: i64 = -(1 << 19);
+/// Maximum signed 20-bit offset component (`(1 << 19) - 1`).
+const PACKED_OFFSET_MAX: i64 = (1 << 19) - 1;
+
 fn try_validate_timespan(zone: &str, ts: &CodegenTimespan) -> Result<(), String> {
     if i32::try_from(ts.utc_offset).is_err() {
         return Err(format!(
@@ -120,7 +134,81 @@ fn try_validate_timespan(zone: &str, ts: &CodegenTimespan) -> Result<(), String>
             "zone {zone}: total offset {total} out of FixedOffset bounds (-86400..86400)"
         ));
     }
+    if !(PACKED_OFFSET_MIN..=PACKED_OFFSET_MAX).contains(&ts.utc_offset) {
+        return Err(format!(
+            "zone {zone}: utc_offset {} out of 20-bit packed range ({PACKED_OFFSET_MIN}..={PACKED_OFFSET_MAX})",
+            ts.utc_offset
+        ));
+    }
+    if !(PACKED_OFFSET_MIN..=PACKED_OFFSET_MAX).contains(&ts.dst_offset) {
+        return Err(format!(
+            "zone {zone}: dst_offset {} out of 20-bit packed range ({PACKED_OFFSET_MIN}..={PACKED_OFFSET_MAX})",
+            ts.dst_offset
+        ));
+    }
+    if let Some(ref name) = ts.name {
+        if name.len() > 64 {
+            return Err(format!(
+                "zone {zone}: abbreviation `{name}` length {} exceeds 64 bytes",
+                name.len()
+            ));
+        }
+    }
     Ok(())
+}
+
+fn pack_timespan(
+    zone: &str,
+    ts: &CodegenTimespan,
+    abbreviations: &str,
+) -> Result<([u8; 5], u16, u8), String> {
+    try_validate_timespan(zone, ts)?;
+    let utc = ts.utc_offset as i32;
+    let dst = ts.dst_offset as i32;
+    let packed = (((utc as i64 as u64) & 0xF_FFFF) << 20) | ((dst as i64 as u64) & 0xF_FFFF);
+    let offset = [
+        packed as u8,
+        (packed >> 8) as u8,
+        (packed >> 16) as u8,
+        (packed >> 24) as u8,
+        (packed >> 32) as u8,
+    ];
+    let packed_back = (offset[0] as u64)
+        | ((offset[1] as u64) << 8)
+        | ((offset[2] as u64) << 16)
+        | ((offset[3] as u64) << 24)
+        | ((offset[4] as u64) << 32);
+    let utc_back = (((packed_back as i64) << 24) >> 44) as i32;
+    let dst_back = (((packed_back as i64) << 44) >> 44) as i32;
+    if utc_back != utc || dst_back != dst {
+        return Err(format!(
+            "zone {zone}: packed offset round-trip mismatch for utc={utc}, dst={dst}"
+        ));
+    }
+    let (abbr_start, abbr_len) = match ts.name.as_deref() {
+        Some(name) => {
+            let start = abbreviations.find(name).ok_or_else(|| {
+                format!("zone {zone}: abbreviation `{name}` missing from interned table")
+            })?;
+            let abbr_start = u16::try_from(start).map_err(|_| {
+                format!("zone {zone}: abbreviation start offset {start} exceeds u16::MAX")
+            })?;
+            let abbr_len = u8::try_from(name.len()).map_err(|_| {
+                format!(
+                    "zone {zone}: abbreviation length {} exceeds u8::MAX",
+                    name.len()
+                )
+            })?;
+            if abbr_len == u8::MAX || &abbreviations[start..start + name.len()] != name {
+                return Err(format!(
+                    "zone {zone}: invalid packed abbreviation slice for `{name}`"
+                ));
+            }
+            (abbr_start, abbr_len)
+        }
+        None => (0, u8::MAX),
+    };
+    Ok((offset, abbr_start, abbr_len))
 }
 
 fn try_resolve_link<'a>(table: &'a Table, zone: &'a str) -> Result<&'a str, String> {
@@ -155,19 +243,18 @@ fn try_resolve_link<'a>(table: &'a Table, zone: &'a str) -> Result<&'a str, Stri
 
 // Generate a list of the time zone periods beyond the first that apply
 // to this zone, as a string representation of a static slice.
-fn format_rest(zone: &str, rest: Vec<(i64, CodegenTimespan)>) -> Result<String, String> {
+fn format_rest(
+    zone: &str,
+    rest: &[(i64, CodegenTimespan)],
+    abbreviations: &str,
+) -> Result<String, String> {
     let mut ret = "&[\n".to_string();
     for (start, ts) in rest {
-        try_validate_timespan(zone, &ts)?;
-        let CodegenTimespan {
-            utc_offset,
-            dst_offset,
-            name,
-        } = ts;
+        let (offset, abbr_start, abbr_len) = pack_timespan(zone, ts, abbreviations)?;
         let _ = writeln!(
             ret,
             "                ({start}, FixedTimespan {{ \
-             utc_offset: {utc_offset}, dst_offset: {dst_offset}, name: {name:?} \
+             offset: {offset:?}, abbr_len: {abbr_len}, abbr_start: {abbr_start} \
              }}),"
         );
     }
@@ -386,6 +473,67 @@ fn render_timezone_file(
     zones: &BTreeSet<&str>,
     uncased: bool,
 ) -> Result<String, String> {
+    if zones.len() > u16::MAX as usize {
+        return Err(format!(
+            "zone count {} exceeds u16::MAX ({})",
+            zones.len(),
+            u16::MAX
+        ));
+    }
+
+    let mut targets = BTreeSet::new();
+    for &z in zones {
+        targets.insert(try_resolve_link(table, z)?);
+    }
+
+    let mut target_timespans = Vec::with_capacity(targets.len());
+    let mut unique_abbrs: BTreeSet<String> = BTreeSet::new();
+    for zone in targets {
+        let timespans = table
+            .try_codegen_timespans(zone)
+            .map_err(|e| format!("failed to build timespans for `{zone}`: {e}"))?;
+        if timespans.rest.len() > u16::MAX as usize {
+            return Err(format!(
+                "zone `{zone}` has {} transition spans, exceeding u16::MAX ({})",
+                timespans.rest.len(),
+                u16::MAX
+            ));
+        }
+        try_validate_timespan(zone, &timespans.first)?;
+        if let Some(ref name) = timespans.first.name {
+            unique_abbrs.insert(name.clone());
+        }
+        for (ts_unix, ts) in &timespans.rest {
+            if !(MIN_CHRONO_UTC_TIMESTAMP..=MAX_CHRONO_UTC_TIMESTAMP).contains(ts_unix) {
+                return Err(format!(
+                    "zone `{zone}`: transition timestamp {ts_unix} out of sad-chrono DateTime<Utc> range ({MIN_CHRONO_UTC_TIMESTAMP}..={MAX_CHRONO_UTC_TIMESTAMP})"
+                ));
+            }
+            try_validate_timespan(zone, ts)?;
+            if let Some(ref name) = ts.name {
+                unique_abbrs.insert(name.clone());
+            }
+        }
+        target_timespans.push((zone, timespans));
+    }
+
+    // Intern unique abbreviations longest-first so shorter suffixes/substrings share bytes.
+    let mut sorted_abbrs: Vec<&str> = unique_abbrs.iter().map(String::as_str).collect();
+    sorted_abbrs.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    let mut abbreviations_str = String::new();
+    for abbr in sorted_abbrs {
+        if !abbreviations_str.contains(abbr) {
+            abbreviations_str.push_str(abbr);
+        }
+    }
+    if abbreviations_str.len() > u16::MAX as usize {
+        return Err(format!(
+            "interned abbreviation table length {} exceeds u16::MAX ({})",
+            abbreviations_str.len(),
+            u16::MAX
+        ));
+    }
+
     let mut out = String::with_capacity(64 * 1024);
     let max_tz_name_len = zones.iter().map(|z| z.len()).max().unwrap_or(0);
 
@@ -394,6 +542,11 @@ fn render_timezone_file(
     writeln!(
         out,
         "use crate::timezone_impl::{{TimeSpans, FixedTimespanSet, FixedTimespan}};\n"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "pub(crate) const ABBREVIATIONS: &str = {abbreviations_str:?};\n"
     )
     .unwrap();
     writeln!(out, "const MAX_TZ_NAME_LEN: usize = {max_tz_name_len};\n").unwrap();
@@ -564,29 +717,18 @@ impl defmt::Format for Tz {{
     )
     .unwrap();
 
-    let mut targets = BTreeSet::new();
-    for &z in zones {
-        targets.insert(try_resolve_link(table, z)?);
-    }
-
-    for zone in targets {
+    for (zone, timespans) in target_timespans {
         let zone_name = convert_bad_chars(zone);
-        let timespans = table
-            .try_codegen_timespans(zone)
-            .map_err(|e| format!("failed to build timespans for `{zone}`: {e}"))?;
-        try_validate_timespan(zone, &timespans.first)?;
-        let rest = format_rest(zone, timespans.rest)?;
+        let (offset, abbr_start, abbr_len) =
+            pack_timespan(zone, &timespans.first, &abbreviations_str)?;
+        let rest = format_rest(zone, &timespans.rest, &abbreviations_str)?;
         writeln!(
             out,
             "        const {zone}: FixedTimespanSet = FixedTimespanSet {{
-            first: FixedTimespan {{ utc_offset: {utc}, dst_offset: {dst}, name: {name:?} }},
+            first: FixedTimespan {{ offset: {offset:?}, abbr_len: {abbr_len}, abbr_start: {abbr_start} }},
             rest: {rest},
         }};\n",
             zone = zone_name.to_uppercase(),
-            rest = rest,
-            utc = timespans.first.utc_offset,
-            dst = timespans.first.dst_offset,
-            name = timespans.first.name,
         )
         .unwrap();
     }
@@ -974,6 +1116,113 @@ mod tests {
         )
         .unwrap_err();
         assert!(err_i32.contains("out of i32 range"), "{err_i32}");
+
+        let err_utc_packed = try_validate_timespan(
+            "UtcPacked/Zone",
+            &CodegenTimespan {
+                utc_offset: 524_288,
+                dst_offset: -450_000,
+                name: Some("U".to_owned()),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err_utc_packed.contains("20-bit packed range"),
+            "{err_utc_packed}"
+        );
+
+        let err_dst_packed = try_validate_timespan(
+            "DstPacked/Zone",
+            &CodegenTimespan {
+                utc_offset: 450_000,
+                dst_offset: -524_289,
+                name: Some("D".to_owned()),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err_dst_packed.contains("20-bit packed range"),
+            "{err_dst_packed}"
+        );
+
+        let err_long_abbr = try_validate_timespan(
+            "LongAbbr/Zone",
+            &CodegenTimespan {
+                utc_offset: 0,
+                dst_offset: 0,
+                name: Some("A".repeat(65)),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err_long_abbr.contains("exceeds 64 bytes"),
+            "{err_long_abbr}"
+        );
+    }
+
+    #[test]
+    fn pack_timespan_roundtrips_signed_offsets() {
+        let abbrs = "-0330EST";
+        for (utc, dst, name, expected_start, expected_len) in [
+            (-57_368i64, -3_600i64, Some("-0330"), 0u16, 5u8),
+            (54_822, 7_200, Some("EST"), 5, 3),
+            (-18_000, 0, None, 0, u8::MAX),
+            (-18_000, 3_600, Some("ST"), 6, 2),
+            (0, 10_800, Some("EST"), 5, 3),
+            (-524_288, 524_287, Some("EST"), 5, 3),
+        ] {
+            let ts = CodegenTimespan {
+                utc_offset: utc,
+                dst_offset: dst,
+                name: name.map(str::to_owned),
+            };
+            let (offset, start, len) = pack_timespan("Test/Zone", &ts, abbrs).unwrap();
+            let packed = (offset[0] as u64)
+                | ((offset[1] as u64) << 8)
+                | ((offset[2] as u64) << 16)
+                | ((offset[3] as u64) << 24)
+                | ((offset[4] as u64) << 32);
+            assert_eq!((((packed as i64) << 24) >> 44), utc);
+            assert_eq!((((packed as i64) << 44) >> 44), dst);
+            assert_eq!(start, expected_start);
+            assert_eq!(len, expected_len);
+        }
+    }
+
+    #[test]
+    fn custom_zone_with_3h_dst_succeeds_and_decodes() {
+        let t = parse_table("Zone Custom/ThreeHourDst 0 3:00 CDST\n");
+        let z: BTreeSet<&str> = ["Custom/ThreeHourDst"].into_iter().collect();
+        let (tz_rs, _) = generate_files_in_memory(&t, &z, false, "2026f").unwrap();
+
+        let (expected_offset, expected_start, expected_len) = pack_timespan(
+            "Custom/ThreeHourDst",
+            &CodegenTimespan {
+                utc_offset: 0,
+                dst_offset: 10_800,
+                name: Some("CDST".to_owned()),
+            },
+            "CDST",
+        )
+        .unwrap();
+        let packed = (expected_offset[0] as u64)
+            | ((expected_offset[1] as u64) << 8)
+            | ((expected_offset[2] as u64) << 16)
+            | ((expected_offset[3] as u64) << 24)
+            | ((expected_offset[4] as u64) << 32);
+        assert_eq!((((packed as i64) << 24) >> 44), 0);
+        assert_eq!((((packed as i64) << 44) >> 44), 10_800);
+        assert!(tz_rs.contains(&format!(
+            "FixedTimespan {{ offset: {expected_offset:?}, abbr_len: {expected_len}, abbr_start: {expected_start} }}"
+        )));
+    }
+
+    #[test]
+    fn rejects_unrepresentable_finite_transition_timestamp_until_300000() {
+        let t = parse_table("Zone Custom/FarFuture 0 - LMT 300000\n 1:00 - FF\n");
+        let z: BTreeSet<&str> = ["Custom/FarFuture"].into_iter().collect();
+        let err = generate_files_in_memory(&t, &z, false, "2026f").unwrap_err();
+        assert!(err.contains("DateTime<Utc> range"), "{err}");
     }
 
     #[test]
@@ -1062,11 +1311,11 @@ mod tests {
         let (tz_rs, dir_rs) = generate_files_in_memory(&t, &alias_only, false, "2026f").unwrap();
         assert!(tz_rs.contains("MAX_TZ_NAME_LEN: usize = 10;"));
         assert!(tz_rs.contains("if s.len() > MAX_TZ_NAME_LEN"));
-        assert!(tz_rs.contains("name: None"));
+        assert!(tz_rs.contains("abbr_len: 255"));
         assert!(!tz_rs.contains("impl Default for Tz"));
         assert!(dir_rs.contains("pub mod Alias"));
 
-        // Explicit numeric abbreviation (-0330) keeps Some("-0330"), while %z keeps None
+        // Explicit numeric abbreviation (-0330) keeps Some("-0330"), while %z keeps None (abbr_len: 255)
         let both: BTreeSet<&str> = [
             "Etc/GMT+1",
             "America/St_Johns",
@@ -1075,8 +1324,9 @@ mod tests {
         .into_iter()
         .collect();
         let (tz_rs2, dir_rs2) = generate_files_in_memory(&t, &both, false, "2026f").unwrap();
-        assert!(tz_rs2.contains("name: None"));
-        assert!(tz_rs2.contains("name: Some(\"-0330\")"));
+        assert!(tz_rs2.contains("pub(crate) const ABBREVIATIONS: &str = \"-0330\";"));
+        assert!(tz_rs2.contains("abbr_len: 255"));
+        assert!(tz_rs2.contains("abbr_len: 5, abbr_start: 0"));
         assert!(dir_rs2.contains("pub mod Argentina"));
         assert!(dir_rs2.contains("pub const Buenos_Aires: Tz"));
     }
@@ -1157,5 +1407,84 @@ mod tests {
         let zones: BTreeSet<&str> = ["Broken/Link"].into_iter().collect();
         assert!(try_generate_and_write(&dir.0, &table, &zones, false, "2026f").is_err());
         assert!(std::fs::read_dir(&dir.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn pack_timespan_rejects_missing_and_oversized_abbreviations() {
+        let missing = pack_timespan(
+            "Test/Missing",
+            &CodegenTimespan {
+                utc_offset: 0,
+                dst_offset: 0,
+                name: Some("MISS".to_owned()),
+            },
+            "EST",
+        )
+        .unwrap_err();
+        assert!(missing.contains("missing from interned table"), "{missing}");
+
+        let mut huge_table = "x".repeat(usize::from(u16::MAX) + 1);
+        huge_table.push_str("EST");
+        let oob = pack_timespan(
+            "Test/Oob",
+            &CodegenTimespan {
+                utc_offset: 0,
+                dst_offset: 0,
+                name: Some("EST".to_owned()),
+            },
+            &huge_table,
+        )
+        .unwrap_err();
+        assert!(oob.contains("exceeds u16::MAX"), "{oob}");
+    }
+
+    #[test]
+    fn render_timezone_file_rejects_table_overflows_and_empty_zoneset() {
+        // Empty zoneset fails try_codegen_timespans inside render_timezone_file.
+        let mut empty_table = Table::default();
+        empty_table
+            .zonesets
+            .insert("Empty/Zone".to_owned(), Vec::new());
+        let empty_zones: BTreeSet<&str> = ["Empty/Zone"].into_iter().collect();
+        let err_empty = render_timezone_file(&empty_table, &empty_zones, false).unwrap_err();
+        assert!(
+            err_empty.contains("failed to build timespans for `Empty/Zone`"),
+            "{err_empty}"
+        );
+
+        // > u16::MAX zones rejected.
+        let many_names: Vec<String> = (0..=usize::from(u16::MAX))
+            .map(|i| format!("Zone{i}"))
+            .collect();
+        let many_zones: BTreeSet<&str> = many_names.iter().map(String::as_str).collect();
+        let err_count = render_timezone_file(&Table::default(), &many_zones, false).unwrap_err();
+        assert!(err_count.contains("zone count"), "{err_count}");
+        assert!(err_count.contains("exceeds u16::MAX"), "{err_count}");
+
+        // > u16::MAX bytes of unique interned abbreviations rejected.
+        let mut abbr_table = Table::default();
+        let mut abbr_zone_names = Vec::with_capacity(1200);
+        let padding = "x".repeat(55);
+        for i in 0..1200 {
+            let zname = format!("Abbr/Z{i:04}");
+            let abbr = format!("A{i:04}{padding}");
+            abbr_table.zonesets.insert(
+                zname.clone(),
+                vec![ZoneInfo {
+                    offset: 0,
+                    saving: Saving::NoSaving,
+                    format: Format::new(&abbr),
+                    end_time: None,
+                }],
+            );
+            abbr_zone_names.push(zname);
+        }
+        let abbr_zones: BTreeSet<&str> = abbr_zone_names.iter().map(String::as_str).collect();
+        let err_abbrs = render_timezone_file(&abbr_table, &abbr_zones, false).unwrap_err();
+        assert!(
+            err_abbrs.contains("interned abbreviation table length")
+                && err_abbrs.contains("exceeds u16::MAX"),
+            "{err_abbrs}"
+        );
     }
 }

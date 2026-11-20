@@ -5,7 +5,11 @@ authors = ["Philip Daniels <Philip.Daniels1971@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+rkyv = { version = "0.8.18", optional = true, default-features = false, features = ["bytecheck"] }
 sad-chrono = "0.5.1"
 sad-chrono-tz = { path = "../../", default-features = false, features = [ "filter-by-regex" ] }
+
+[features]
+rkyv = ["dep:rkyv", "sad-chrono-tz/rkyv"]
 
 [workspace]

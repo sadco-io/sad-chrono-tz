@@ -3,38 +3,90 @@ use core::fmt::{Debug, Display, Error, Formatter, Write};
 
 use sad_chrono::{
     DateTime, Duration, FixedOffset, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset,
-    TimeZone,
+    TimeZone, Utc,
 };
 
 use crate::binary_search::binary_search;
-use crate::timezones::Tz;
+use crate::timezones::{Tz, ABBREVIATIONS};
 
 /// An Offset that applies for a period of time
 ///
 /// For example, [`::US::Eastern`] is composed of at least two
 /// `FixedTimespan`s: `EST` and `EDT`, that are variously in effect.
 #[derive(Copy, Clone, PartialEq, Eq)]
-pub struct FixedTimespan {
-    /// The base offset from UTC; this usually doesn't change unless the government changes something
-    pub utc_offset: i32,
-    /// The additional offset from UTC for this timespan; typically for daylight saving time
-    pub dst_offset: i32,
-    /// The name of this timezone, for example the difference between `EDT`/`EST`
-    pub name: Option<&'static str>,
+pub(crate) struct FixedTimespan {
+    /// Packs `utc_offset` (bits 20..40, 20-bit signed) and `dst_offset` (bits 0..20, 20-bit signed)
+    /// into 5 little-endian bytes, keeping `FixedTimespan` at 8 bytes with zero padding.
+    pub(crate) offset: [u8; 5],
+    /// Byte length into `ABBREVIATIONS`, or `u8::MAX` when no explicit abbreviation exists (`%z`).
+    pub(crate) abbr_len: u8,
+    /// Byte offset into `ABBREVIATIONS` when `abbr_len != u8::MAX`.
+    pub(crate) abbr_start: u16,
+}
+
+const _: () = assert!(core::mem::size_of::<FixedTimespan>() == 8);
+
+impl FixedTimespan {
+    #[inline]
+    const fn packed_u64(&self) -> u64 {
+        (self.offset[0] as u64)
+            | ((self.offset[1] as u64) << 8)
+            | ((self.offset[2] as u64) << 16)
+            | ((self.offset[3] as u64) << 24)
+            | ((self.offset[4] as u64) << 32)
+    }
+
+    #[inline]
+    pub(crate) const fn utc_offset(&self) -> i32 {
+        (((self.packed_u64() as i64) << 24) >> 44) as i32
+    }
+
+    #[inline]
+    pub(crate) const fn dst_offset(&self) -> i32 {
+        (((self.packed_u64() as i64) << 44) >> 44) as i32
+    }
+
+    #[inline]
+    pub(crate) fn name(&self) -> Option<&'static str> {
+        if self.abbr_len == u8::MAX {
+            None
+        } else {
+            let start = self.abbr_start as usize;
+            let len = self.abbr_len as usize;
+            Some(&ABBREVIATIONS[start..start + len])
+        }
+    }
+
+    #[cfg(test)]
+    const fn for_test(utc_offset: i32, dst_offset: i32, abbr_start: u16, abbr_len: u8) -> Self {
+        let packed = (((utc_offset as i64 as u64) & 0xF_FFFF) << 20)
+            | ((dst_offset as i64 as u64) & 0xF_FFFF);
+        Self {
+            offset: [
+                packed as u8,
+                (packed >> 8) as u8,
+                (packed >> 16) as u8,
+                (packed >> 24) as u8,
+                (packed >> 32) as u8,
+            ],
+            abbr_len,
+            abbr_start,
+        }
+    }
 }
 
 impl Offset for FixedTimespan {
     fn fix(&self) -> FixedOffset {
-        FixedOffset::east_opt(self.utc_offset.saturating_add(self.dst_offset)).unwrap()
+        FixedOffset::east_opt(self.utc_offset().saturating_add(self.dst_offset())).unwrap()
     }
 }
 
 impl Display for FixedTimespan {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        if let Some(name) = self.name {
+        if let Some(name) = self.name() {
             return write!(f, "{name}");
         }
-        let offset = self.utc_offset as i64 + self.dst_offset as i64;
+        let offset = self.utc_offset() as i64 + self.dst_offset() as i64;
         let sign = if offset < 0 { '-' } else { '+' };
         let off = offset.unsigned_abs();
 
@@ -63,14 +115,33 @@ impl Debug for FixedTimespan {
 #[cfg(feature = "defmt")]
 impl defmt::Format for FixedTimespan {
     fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "{:?}", self.name);
+        defmt::write!(f, "{:?}", self.name());
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+/// Offset for a specific transition span within a [`Tz`] timezone.
+///
+/// Validity bounds ([`TzOffset::valid_starting`], [`TzOffset::valid_until`]) and span traversal
+/// ([`TzOffset::next_offset`], [`TzOffset::prev_offset`], [`TzOffset::iter`]) reflect the
+/// generated transition table for the timezone: span starts are inclusive and span ends are
+/// exclusive. Recurring rules in `sad-parse-zoneinfo` expand over `1800..2100` (`2100` excluded);
+/// explicit zone boundaries are processed separately, and lookups extrapolate the outer spans
+/// (for which `valid_starting()` on the first span or `valid_until()` on the final span returns
+/// `None`).
+///
+/// `PartialEq` for `TzOffset` compares the timezone, both offset components, and abbreviation, so
+/// equal `TzOffset` values (such as winter offsets from different years) can still have different
+/// validity bounds.
+#[derive(Copy, Clone, Eq)]
 pub struct TzOffset {
-    tz: Tz,
-    offset: FixedTimespan,
+    pub(crate) tz: Tz,
+    pub(crate) index: u16,
+}
+
+impl PartialEq for TzOffset {
+    fn eq(&self, other: &Self) -> bool {
+        self.tz == other.tz && (self.index == other.index || self.timespan() == other.timespan())
+    }
 }
 
 /// Detailed timezone offset components that expose any special conditions currently in effect.
@@ -143,11 +214,16 @@ pub trait OffsetName {
 }
 
 impl TzOffset {
-    fn new(tz: Tz, offset: FixedTimespan) -> Self {
-        TzOffset { tz, offset }
+    #[inline]
+    fn new(tz: Tz, index: usize) -> Self {
+        debug_assert!(u16::try_from(index).is_ok());
+        TzOffset {
+            tz,
+            index: index as u16,
+        }
     }
 
-    fn map_localresult(tz: Tz, result: LocalResult<FixedTimespan>) -> LocalResult<Self> {
+    fn map_localresult(tz: Tz, result: LocalResult<usize>) -> LocalResult<Self> {
         match result {
             LocalResult::None => LocalResult::None,
             LocalResult::Single(s) => LocalResult::Single(TzOffset::new(tz, s)),
@@ -156,15 +232,173 @@ impl TzOffset {
             }
         }
     }
+
+    #[inline]
+    pub(crate) fn timespans(&self) -> FixedTimespanSet {
+        self.tz.timespans()
+    }
+
+    #[inline]
+    pub(crate) fn timespan(&self) -> FixedTimespan {
+        self.timespans().get(self.index as usize)
+    }
+
+    /// Returns the UTC instant at which this offset became valid, or `None` for the initial
+    /// open-ended span of the timezone.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::{NaiveDate, TimeZone};
+    /// use sad_chrono_tz::America::New_York;
+    ///
+    /// let dt = New_York.with_ymd_and_hms(2024, 7, 1, 12, 0, 0).unwrap();
+    /// let offset = dt.offset();
+    /// let start = offset.valid_starting().unwrap();
+    /// assert_eq!(start, NaiveDate::from_ymd_opt(2024, 3, 10).unwrap().and_hms_opt(7, 0, 0).unwrap().and_utc());
+    /// # }
+    /// ```
+    pub fn valid_starting(&self) -> Option<DateTime<Utc>> {
+        let rest_idx = usize::from(self.index).checked_sub(1)?;
+        let (ts, _) = self.timespans().rest.get(rest_idx)?;
+        DateTime::from_timestamp(*ts, 0)
+    }
+
+    /// Returns the exclusive UTC instant at which this offset ceases to be valid, or `None` for
+    /// the final open-ended span of the timezone.
+    ///
+    /// When `Some(until)` is returned, `until` equals `self.next_offset()?.valid_starting()`.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::{NaiveDate, TimeZone};
+    /// use sad_chrono_tz::America::New_York;
+    ///
+    /// let dt = New_York.with_ymd_and_hms(2024, 7, 1, 12, 0, 0).unwrap();
+    /// let offset = dt.offset();
+    /// assert_eq!(offset.valid_until(), offset.next_offset().unwrap().valid_starting());
+    /// assert_eq!(
+    ///     offset.valid_until().unwrap(),
+    ///     NaiveDate::from_ymd_opt(2024, 11, 3).unwrap().and_hms_opt(6, 0, 0).unwrap().and_utc()
+    /// );
+    /// # }
+    /// ```
+    pub fn valid_until(&self) -> Option<DateTime<Utc>> {
+        let (ts, _) = self.timespans().rest.get(usize::from(self.index))?;
+        DateTime::from_timestamp(*ts, 0)
+    }
+
+    /// Returns the next offset span in this timezone, or `None` if this is the final span.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::TimeZone;
+    /// use sad_chrono_tz::Europe::London;
+    /// use sad_chrono_tz::OffsetName;
+    ///
+    /// let winter = London.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap();
+    /// let next = winter.offset().next_offset().unwrap();
+    /// assert_eq!(next.abbreviation(), Some("BST"));
+    /// # }
+    /// ```
+    pub fn next_offset(&self) -> Option<Self> {
+        let next_idx = self.index.checked_add(1)?;
+        if usize::from(next_idx) < self.timespans().len() {
+            Some(Self {
+                tz: self.tz,
+                index: next_idx,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Returns the previous offset span in this timezone, or `None` if this is the initial span.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::TimeZone;
+    /// use sad_chrono_tz::Europe::London;
+    /// use sad_chrono_tz::OffsetName;
+    ///
+    /// let summer = London.with_ymd_and_hms(2024, 7, 15, 12, 0, 0).unwrap();
+    /// let prev = summer.offset().prev_offset().unwrap();
+    /// assert_eq!(prev.abbreviation(), Some("GMT"));
+    /// # }
+    /// ```
+    pub fn prev_offset(&self) -> Option<Self> {
+        self.index
+            .checked_sub(1)
+            .map(|index| Self { tz: self.tz, index })
+    }
+
+    /// Returns an iterator over this offset and all remaining offset spans for the timezone.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::TimeZone;
+    /// use sad_chrono_tz::UTC;
+    ///
+    /// let dt = UTC.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    /// assert_eq!(dt.offset().iter().count(), 1);
+    /// # }
+    /// ```
+    pub fn iter(&self) -> TzOffsetIter {
+        TzOffsetIter(Some(*self))
+    }
 }
+
+/// Iterator over consecutive [`TzOffset`] spans in a timezone, starting from a given offset.
+///
+/// `PartialEq` compares the iterator cursor position `(tz, index)` (or exhausted state), unlike
+/// [`TzOffset::eq`] which compares offset values.
+#[derive(Clone, Copy, Debug, Eq)]
+pub struct TzOffsetIter(Option<TzOffset>);
+
+impl PartialEq for TzOffsetIter {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.0, other.0) {
+            (Some(a), Some(b)) => a.tz == b.tz && a.index == b.index,
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Iterator for TzOffsetIter {
+    type Item = TzOffset;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let offset = self.0?;
+        self.0 = offset.next_offset();
+        Some(offset)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.0 {
+            Some(off) => {
+                let remaining = off.timespans().len().saturating_sub(usize::from(off.index));
+                (remaining, Some(remaining))
+            }
+            None => (0, Some(0)),
+        }
+    }
+}
+
+impl ExactSizeIterator for TzOffsetIter {}
+impl core::iter::FusedIterator for TzOffsetIter {}
 
 impl OffsetComponents for TzOffset {
     fn base_utc_offset(&self) -> Duration {
-        Duration::seconds(self.offset.utc_offset as i64)
+        Duration::seconds(self.timespan().utc_offset() as i64)
     }
 
     fn dst_offset(&self) -> Duration {
-        Duration::seconds(self.offset.dst_offset as i64)
+        Duration::seconds(self.timespan().dst_offset() as i64)
     }
 }
 
@@ -174,32 +408,32 @@ impl OffsetName for TzOffset {
     }
 
     fn abbreviation(&self) -> Option<&str> {
-        self.offset.name
+        self.timespan().name()
     }
 }
 
 impl Offset for TzOffset {
     fn fix(&self) -> FixedOffset {
-        self.offset.fix()
+        self.timespan().fix()
     }
 }
 
 impl Display for TzOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        Display::fmt(&self.offset, f)
+        Display::fmt(&self.timespan(), f)
     }
 }
 
 impl Debug for TzOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        Debug::fmt(&self.offset, f)
+        Debug::fmt(&self.timespan(), f)
     }
 }
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for TzOffset {
     fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "{:?}", self.offset);
+        defmt::write!(f, "{:?}", self.timespan());
     }
 }
 
@@ -243,13 +477,13 @@ impl Span {
 }
 
 #[derive(Copy, Clone)]
-pub struct FixedTimespanSet {
-    pub first: FixedTimespan,
-    pub rest: &'static [(i64, FixedTimespan)],
+pub(crate) struct FixedTimespanSet {
+    pub(crate) first: FixedTimespan,
+    pub(crate) rest: &'static [(i64, FixedTimespan)],
 }
 
 impl FixedTimespanSet {
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         1 + self.rest.len()
     }
 
@@ -272,7 +506,7 @@ impl FixedTimespanSet {
     fn local_span(&self, index: usize) -> Span {
         debug_assert!(index < self.len());
         let clamp_local = |ts: i64, span: FixedTimespan| -> i64 {
-            (ts as i128 + span.utc_offset as i128 + span.dst_offset as i128)
+            (ts as i128 + span.utc_offset() as i128 + span.dst_offset() as i128)
                 .clamp(i64::MIN as i128, i64::MAX as i128) as i64
         };
         Span {
@@ -292,7 +526,7 @@ impl FixedTimespanSet {
         }
     }
 
-    fn get(&self, index: usize) -> FixedTimespan {
+    pub(crate) fn get(&self, index: usize) -> FixedTimespan {
         debug_assert!(index < self.len());
         if index == 0 {
             self.first
@@ -302,7 +536,7 @@ impl FixedTimespanSet {
     }
 }
 
-pub trait TimeSpans {
+pub(crate) trait TimeSpans {
     fn timespans(&self) -> FixedTimespanSet;
 }
 
@@ -365,19 +599,19 @@ impl TimeZone for Tz {
         TzOffset::map_localresult(
             *self,
             match index {
-                Ok(0) if timespans.len() == 1 => LocalResult::Single(timespans.get(0)),
+                Ok(0) if timespans.len() == 1 => LocalResult::Single(0),
                 Ok(0) if timespans.local_span(1).contains(timestamp) => {
-                    LocalResult::Ambiguous(timespans.get(0), timespans.get(1))
+                    LocalResult::Ambiguous(0, 1)
                 }
-                Ok(0) => LocalResult::Single(timespans.get(0)),
+                Ok(0) => LocalResult::Single(0),
                 Ok(i) if timespans.local_span(i - 1).contains(timestamp) => {
-                    LocalResult::Ambiguous(timespans.get(i - 1), timespans.get(i))
+                    LocalResult::Ambiguous(i - 1, i)
                 }
-                Ok(i) if i == timespans.len() - 1 => LocalResult::Single(timespans.get(i)),
+                Ok(i) if i == timespans.len() - 1 => LocalResult::Single(i),
                 Ok(i) if timespans.local_span(i + 1).contains(timestamp) => {
-                    LocalResult::Ambiguous(timespans.get(i), timespans.get(i + 1))
+                    LocalResult::Ambiguous(i, i + 1)
                 }
-                Ok(i) => LocalResult::Single(timespans.get(i)),
+                Ok(i) => LocalResult::Single(i),
                 Err(_) => LocalResult::None,
             },
         )
@@ -396,7 +630,7 @@ impl TimeZone for Tz {
         let timespans = self.timespans();
         let index =
             binary_search(0, timespans.len(), |i| timespans.utc_span(i).cmp(timestamp)).unwrap();
-        TzOffset::new(*self, timespans.get(index))
+        TzOffset::new(*self, index)
     }
 }
 
@@ -445,12 +679,7 @@ impl GapInfo {
                     .local_span(start_idx)
                     .end
                     .and_then(|start_time| DateTime::from_timestamp(start_time, 0))
-                    .map(|start_time| {
-                        (
-                            start_time.naive_local(),
-                            TzOffset::new(*tz, timespans.get(start_idx)),
-                        )
-                    })
+                    .map(|start_time| (start_time.naive_local(), TzOffset::new(*tz, start_idx)))
             }
         };
 
@@ -478,30 +707,16 @@ mod tests {
 
     #[test]
     fn local_span_extreme_no_overflow() {
+        const SET_REST: &[(i64, FixedTimespan)] = &[
+            (i64::MIN + 10, FixedTimespan::for_test(-3600, 0, 0, u8::MAX)),
+            (
+                i64::MAX - 10,
+                FixedTimespan::for_test(3600, 3600, 0, u8::MAX),
+            ),
+        ];
         let set = FixedTimespanSet {
-            first: FixedTimespan {
-                utc_offset: -3600,
-                dst_offset: 0,
-                name: Some("MIN"),
-            },
-            rest: &[
-                (
-                    i64::MIN + 10,
-                    FixedTimespan {
-                        utc_offset: -3600,
-                        dst_offset: 0,
-                        name: Some("LOW"),
-                    },
-                ),
-                (
-                    i64::MAX - 10,
-                    FixedTimespan {
-                        utc_offset: 3600,
-                        dst_offset: 3600,
-                        name: Some("HIGH"),
-                    },
-                ),
-            ],
+            first: FixedTimespan::for_test(-3600, 0, 0, u8::MAX),
+            rest: SET_REST,
         };
         assert_eq!(set.local_span(0).end, Some(i64::MIN));
         assert_eq!(set.local_span(1).begin, Some(i64::MIN));
@@ -509,34 +724,161 @@ mod tests {
         assert_eq!(set.local_span(2).begin, Some(i64::MAX));
 
         // Opposite-signed UTC and DST offsets must be combined in i128 before clamping once.
+        const OPP_REST: &[(i64, FixedTimespan)] = &[
+            (
+                i64::MIN + 10,
+                FixedTimespan::for_test(-3600, 7200, 0, u8::MAX),
+            ),
+            (
+                i64::MAX - 10,
+                FixedTimespan::for_test(3600, -7200, 0, u8::MAX),
+            ),
+        ];
         let opposite = FixedTimespanSet {
-            first: FixedTimespan {
-                utc_offset: -3600,
-                dst_offset: 7200,
-                name: Some("MIN_OPP"),
-            },
-            rest: &[
-                (
-                    i64::MIN + 10,
-                    FixedTimespan {
-                        utc_offset: -3600,
-                        dst_offset: 7200,
-                        name: Some("LOW_OPP"),
-                    },
-                ),
-                (
-                    i64::MAX - 10,
-                    FixedTimespan {
-                        utc_offset: 3600,
-                        dst_offset: -7200,
-                        name: Some("HIGH_OPP"),
-                    },
-                ),
-            ],
+            first: FixedTimespan::for_test(-3600, 7200, 0, u8::MAX),
+            rest: OPP_REST,
         };
         assert_eq!(opposite.local_span(0).end, Some(i64::MIN + 3610));
         assert_eq!(opposite.local_span(1).begin, Some(i64::MIN + 3610));
         assert_eq!(opposite.local_span(1).end, Some(i64::MAX));
         assert_eq!(opposite.local_span(2).begin, Some(i64::MAX - 3610));
+    }
+
+    #[test]
+    fn next_prev_and_iter_validity_bounds() {
+        use crate::TZ_VARIANTS;
+
+        // Multi-transition zone (Eastern)
+        #[cfg(not(feature = "filter-by-regex"))]
+        {
+            let eastern = Tz::US__Eastern;
+            let edt = eastern.with_ymd_and_hms(2019, 11, 3, 0, 0, 0).unwrap();
+            let edt_offset = *edt.offset();
+            let next_offset = TzOffset::new(edt_offset.tz, usize::from(edt_offset.index) + 1);
+            assert_eq!(edt_offset.next_offset(), Some(next_offset));
+            assert_eq!(next_offset.prev_offset(), Some(edt_offset));
+            assert_eq!(edt_offset.iter().next(), Some(edt_offset));
+            assert_eq!(edt_offset.iter().nth(1), edt_offset.next_offset());
+            assert_eq!(edt_offset.valid_until(), next_offset.valid_starting());
+
+            // Check actual transition boundary behavior
+            let until = edt_offset.valid_until().unwrap();
+            assert_eq!(
+                (until - Duration::seconds(1))
+                    .with_timezone(&eastern)
+                    .offset(),
+                &edt_offset
+            );
+            assert_eq!(until.with_timezone(&eastern).offset(), &next_offset);
+
+            // Havana 2026f skipped 2026-11-01 fallback -> stays CDT until 2027-11-07 05:00:00 UTC
+            let havana = Tz::America__Havana;
+            let hav_2026 = NaiveDate::from_ymd_opt(2026, 11, 2)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .with_timezone(&havana);
+            let expected_until = NaiveDate::from_ymd_opt(2027, 11, 7)
+                .unwrap()
+                .and_hms_opt(5, 0, 0)
+                .unwrap()
+                .and_utc();
+            assert_eq!(hav_2026.offset().valid_until(), Some(expected_until));
+
+            // Single-span zones (UTC, Etc/GMT+1)
+            for single_tz in [Tz::UTC, Tz::Etc__GMTPlus1] {
+                let off = *DateTime::<Utc>::MIN_UTC.with_timezone(&single_tz).offset();
+                assert_eq!(off.valid_starting(), None);
+                assert_eq!(off.valid_until(), None);
+                assert_eq!(off.next_offset(), None);
+                assert_eq!(off.prev_offset(), None);
+                assert_eq!(off.iter().len(), 1);
+                assert_eq!(off.iter().collect::<Vec<_>>(), vec![off]);
+            }
+        }
+
+        // Exhaustive check across all compiled variants and extreme dates: zero panics/overflows
+        for &tz in TZ_VARIANTS.iter() {
+            let min_dt = DateTime::<Utc>::MIN_UTC.with_timezone(&tz);
+            let max_dt = DateTime::<Utc>::MAX_UTC.with_timezone(&tz);
+            let _ = NaiveDateTime::MIN.and_local_timezone(tz);
+            let _ = NaiveDateTime::MAX.and_local_timezone(tz);
+
+            let first = *min_dt.offset();
+            assert_eq!(first.valid_starting(), None);
+            assert_eq!(first.prev_offset(), None);
+
+            let timespans = tz.timespans();
+            let mut iter = first.iter();
+            assert_eq!(iter.len(), timespans.len());
+
+            let mut prev_start: Option<DateTime<Utc>> = None;
+            let mut prev_off: Option<TzOffset> = None;
+            let mut count = 0usize;
+            for off in &mut iter {
+                count += 1;
+                if let Some(p) = prev_off {
+                    assert_eq!(off.prev_offset(), Some(p));
+                    assert_eq!(p.valid_until(), off.valid_starting());
+                    let start = off.valid_starting().unwrap();
+                    if let Some(ps) = prev_start {
+                        assert!(start > ps);
+                    }
+                    prev_start = Some(start);
+                }
+                prev_off = Some(off);
+            }
+            assert_eq!(count, timespans.len());
+            assert_eq!(iter.len(), 0);
+            assert_eq!(iter.next(), None);
+
+            let last = prev_off.unwrap();
+            assert_eq!(last.valid_until(), None);
+            assert_eq!(last.next_offset(), None);
+            assert_eq!(max_dt.offset().valid_until(), None);
+        }
+    }
+
+    #[test]
+    fn tz_offset_iter_exhausted_eq_and_ambiguous_first_transition() {
+        use crate::TZ_VARIANTS;
+
+        let first_tz = TZ_VARIANTS[0];
+        let off = *DateTime::<Utc>::MIN_UTC.with_timezone(&first_tz).offset();
+        let active_iter = off.iter();
+        let mut exhausted1 = off.iter();
+        exhausted1.by_ref().for_each(drop);
+        let mut exhausted2 = off.iter();
+        exhausted2.by_ref().for_each(drop);
+
+        assert_eq!(exhausted1, exhausted2);
+        assert_ne!(active_iter, exhausted1);
+        assert_ne!(exhausted1, active_iter);
+        assert_eq!(exhausted1.size_hint(), (0, Some(0)));
+
+        // Exercise LocalResult::Ambiguous(0, 1) when a timezone's first transition steps backward.
+        let mut checked_ambiguous_first = false;
+        for &tz in TZ_VARIANTS.iter() {
+            let ts = tz.timespans();
+            if let Some(&(transition_utc, next_span)) = ts.rest.first() {
+                let first_total = ts.first.utc_offset() + ts.first.dst_offset();
+                let next_total = next_span.utc_offset() + next_span.dst_offset();
+                if first_total > next_total {
+                    let local_ts = transition_utc + next_total as i64;
+                    if ts.local_span(0).contains(local_ts) && ts.local_span(1).contains(local_ts) {
+                        let naive = DateTime::from_timestamp(local_ts, 0).unwrap().naive_utc();
+                        let res = tz.offset_from_local_datetime(&naive);
+                        assert_eq!(
+                            res,
+                            LocalResult::Ambiguous(TzOffset::new(tz, 0), TzOffset::new(tz, 1))
+                        );
+                        checked_ambiguous_first = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(checked_ambiguous_first);
     }
 }
