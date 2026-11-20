@@ -1032,4 +1032,39 @@ mod tests {
             .with_timezone(&sp);
         assert_eq!(at_mar66.offset().fix().local_minus_utc(), -3 * 3600);
     }
+
+    #[test]
+    fn test_type_size() {
+        use super::TzOffset;
+        use sad_chrono::DateTime;
+
+        assert!(core::mem::size_of::<TzOffset>() <= 8);
+        assert!(core::mem::size_of::<DateTime<Tz>>() <= 24);
+        #[cfg(not(feature = "filter-by-regex"))]
+        {
+            assert_eq!(core::mem::size_of::<TzOffset>(), 4);
+            assert_eq!(core::mem::size_of::<DateTime<Tz>>(), 16);
+        }
+    }
+
+    #[test]
+    fn tz_offset_partial_eq_preserves_0110_semantics() {
+        use super::America::{New_York, Toronto};
+
+        let ny_jan_2024 = New_York.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap();
+        let ny_jan_2025 = New_York.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let ny_jul_2024 = New_York.with_ymd_and_hms(2024, 7, 15, 12, 0, 0).unwrap();
+        let tor_jan_2024 = Toronto.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap();
+
+        assert_eq!(ny_jan_2024.offset(), ny_jan_2025.offset());
+        assert_ne!(ny_jan_2024.offset(), ny_jul_2024.offset());
+        assert_ne!(ny_jan_2024.offset(), tor_jan_2024.offset());
+    }
+
+    #[test]
+    fn tz_variants_discriminants_match_indices() {
+        for (idx, &tz) in super::TZ_VARIANTS.iter().enumerate() {
+            assert_eq!(tz as usize, idx);
+        }
+    }
 }
