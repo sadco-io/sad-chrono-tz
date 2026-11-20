@@ -1408,4 +1408,83 @@ mod tests {
         assert!(try_generate_and_write(&dir.0, &table, &zones, false, "2026f").is_err());
         assert!(std::fs::read_dir(&dir.0).unwrap().next().is_none());
     }
+
+    #[test]
+    fn pack_timespan_rejects_missing_and_oversized_abbreviations() {
+        let missing = pack_timespan(
+            "Test/Missing",
+            &CodegenTimespan {
+                utc_offset: 0,
+                dst_offset: 0,
+                name: Some("MISS".to_owned()),
+            },
+            "EST",
+        )
+        .unwrap_err();
+        assert!(missing.contains("missing from interned table"), "{missing}");
+
+        let mut huge_table = "x".repeat(usize::from(u16::MAX) + 1);
+        huge_table.push_str("EST");
+        let oob = pack_timespan(
+            "Test/Oob",
+            &CodegenTimespan {
+                utc_offset: 0,
+                dst_offset: 0,
+                name: Some("EST".to_owned()),
+            },
+            &huge_table,
+        )
+        .unwrap_err();
+        assert!(oob.contains("exceeds u16::MAX"), "{oob}");
+    }
+
+    #[test]
+    fn render_timezone_file_rejects_table_overflows_and_empty_zoneset() {
+        // Empty zoneset fails try_codegen_timespans inside render_timezone_file.
+        let mut empty_table = Table::default();
+        empty_table
+            .zonesets
+            .insert("Empty/Zone".to_owned(), Vec::new());
+        let empty_zones: BTreeSet<&str> = ["Empty/Zone"].into_iter().collect();
+        let err_empty = render_timezone_file(&empty_table, &empty_zones, false).unwrap_err();
+        assert!(
+            err_empty.contains("failed to build timespans for `Empty/Zone`"),
+            "{err_empty}"
+        );
+
+        // > u16::MAX zones rejected.
+        let many_names: Vec<String> = (0..=usize::from(u16::MAX))
+            .map(|i| format!("Zone{i}"))
+            .collect();
+        let many_zones: BTreeSet<&str> = many_names.iter().map(String::as_str).collect();
+        let err_count = render_timezone_file(&Table::default(), &many_zones, false).unwrap_err();
+        assert!(err_count.contains("zone count"), "{err_count}");
+        assert!(err_count.contains("exceeds u16::MAX"), "{err_count}");
+
+        // > u16::MAX bytes of unique interned abbreviations rejected.
+        let mut abbr_table = Table::default();
+        let mut abbr_zone_names = Vec::with_capacity(1200);
+        let padding = "x".repeat(55);
+        for i in 0..1200 {
+            let zname = format!("Abbr/Z{i:04}");
+            let abbr = format!("A{i:04}{padding}");
+            abbr_table.zonesets.insert(
+                zname.clone(),
+                vec![ZoneInfo {
+                    offset: 0,
+                    saving: Saving::NoSaving,
+                    format: Format::new(&abbr),
+                    end_time: None,
+                }],
+            );
+            abbr_zone_names.push(zname);
+        }
+        let abbr_zones: BTreeSet<&str> = abbr_zone_names.iter().map(String::as_str).collect();
+        let err_abbrs = render_timezone_file(&abbr_table, &abbr_zones, false).unwrap_err();
+        assert!(
+            err_abbrs.contains("interned abbreviation table length")
+                && err_abbrs.contains("exceeds u16::MAX"),
+            "{err_abbrs}"
+        );
+    }
 }

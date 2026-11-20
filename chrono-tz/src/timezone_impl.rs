@@ -839,4 +839,46 @@ mod tests {
             assert_eq!(max_dt.offset().valid_until(), None);
         }
     }
+
+    #[test]
+    fn tz_offset_iter_exhausted_eq_and_ambiguous_first_transition() {
+        use crate::TZ_VARIANTS;
+
+        let first_tz = TZ_VARIANTS[0];
+        let off = *DateTime::<Utc>::MIN_UTC.with_timezone(&first_tz).offset();
+        let active_iter = off.iter();
+        let mut exhausted1 = off.iter();
+        exhausted1.by_ref().for_each(drop);
+        let mut exhausted2 = off.iter();
+        exhausted2.by_ref().for_each(drop);
+
+        assert_eq!(exhausted1, exhausted2);
+        assert_ne!(active_iter, exhausted1);
+        assert_ne!(exhausted1, active_iter);
+        assert_eq!(exhausted1.size_hint(), (0, Some(0)));
+
+        // Exercise LocalResult::Ambiguous(0, 1) when a timezone's first transition steps backward.
+        let mut checked_ambiguous_first = false;
+        for &tz in TZ_VARIANTS.iter() {
+            let ts = tz.timespans();
+            if let Some(&(transition_utc, next_span)) = ts.rest.first() {
+                let first_total = ts.first.utc_offset() + ts.first.dst_offset();
+                let next_total = next_span.utc_offset() + next_span.dst_offset();
+                if first_total > next_total {
+                    let local_ts = transition_utc + next_total as i64;
+                    if ts.local_span(0).contains(local_ts) && ts.local_span(1).contains(local_ts) {
+                        let naive = DateTime::from_timestamp(local_ts, 0).unwrap().naive_utc();
+                        let res = tz.offset_from_local_datetime(&naive);
+                        assert_eq!(
+                            res,
+                            LocalResult::Ambiguous(TzOffset::new(tz, 0), TzOffset::new(tz, 1))
+                        );
+                        checked_ambiguous_first = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(checked_ambiguous_first);
+    }
 }

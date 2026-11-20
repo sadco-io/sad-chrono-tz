@@ -385,6 +385,183 @@ mod tests {
         }
     }
 
+    #[test]
+    fn archived_tz_and_offset_error_display_debug_eq_and_deserialize() {
+        use core::error::Error as _;
+        use core::fmt;
+        use rkyv::rancor::{Source, Strategy, Trace};
+
+        #[derive(Debug)]
+        struct CaptureError(String);
+
+        impl fmt::Display for CaptureError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl core::error::Error for CaptureError {}
+
+        impl Trace for CaptureError {
+            fn trace<R>(mut self, trace: R) -> Self
+            where
+                R: fmt::Debug + fmt::Display + Send + Sync + 'static,
+            {
+                self.0.push_str(": ");
+                self.0.push_str(&trace.to_string());
+                self
+            }
+        }
+
+        impl Source for CaptureError {
+            fn new<T: core::error::Error + Send + Sync + 'static>(source: T) -> Self {
+                let _ = source.source();
+                let _ = format!("{source:?}");
+                Self(source.to_string())
+            }
+        }
+
+        let tz_len = core::mem::size_of::<ArchivedTz>();
+        let off_len = core::mem::size_of::<ArchivedTzOffset>();
+
+        // Valid ArchivedTz: PartialEq<ArchivedTz> for Tz and Debug
+        let first_tz = TZ_VARIANTS[0];
+        let tz_buf = archive_no_alloc(&first_tz);
+        let acc_tz = access::<ArchivedTz, CaptureError>(&tz_buf.0[..tz_len]).unwrap();
+        assert_eq!(first_tz, *acc_tz);
+        assert_eq!(format!("{:?}", *acc_tz), format!("{:?}", first_tz));
+        if TZ_VARIANTS.len() > 1 {
+            assert_ne!(TZ_VARIANTS[1], *acc_tz);
+        }
+
+        // Invalid ArchivedTz: Source Display/Error, Debug, and direct Deserialize
+        let bad_disc = TZ_VARIANTS.len() as u16;
+        let bad_tz = ArchivedTz(Archived::<u16>::from_native(bad_disc));
+        // SAFETY: `ArchivedTz` is `#[repr(transparent)]` over `Archived<u16>` (2 bytes, NoUndef).
+        let bad_tz_bytes =
+            unsafe { core::slice::from_raw_parts((&raw const bad_tz).cast::<u8>(), tz_len) };
+        let acc_err = access::<ArchivedTz, CaptureError>(bad_tz_bytes).unwrap_err();
+        assert!(acc_err
+            .to_string()
+            .contains("archived Tz discriminant is out of range for TZ_VARIANTS"));
+        let _ = acc_err.source();
+        let traced_err = acc_err.trace("ctx");
+        assert!(traced_err.to_string().contains("ctx"));
+        let dec_err = from_bytes::<Tz, CaptureError>(bad_tz_bytes).unwrap_err();
+        assert!(dec_err
+            .to_string()
+            .contains("archived Tz discriminant is out of range for TZ_VARIANTS"));
+        assert_eq!(
+            format!("{bad_tz:?}"),
+            format!("ArchivedTz::Invalid({bad_disc})")
+        );
+
+        let mut unit = ();
+        let direct_tz_err = <ArchivedTz as Deserialize<Tz, _>>::deserialize(
+            &bad_tz,
+            Strategy::<_, CaptureError>::wrap(&mut unit),
+        )
+        .unwrap_err();
+        assert!(direct_tz_err
+            .to_string()
+            .contains("archived Tz discriminant is out of range for TZ_VARIANTS"));
+
+        // Valid ArchivedTzOffset: PartialEq<ArchivedTzOffset> for TzOffset, PartialEq, Debug
+        let first_off = *sad_chrono::DateTime::<sad_chrono::Utc>::MIN_UTC
+            .with_timezone(&first_tz)
+            .offset();
+        let off_buf = archive_no_alloc(&first_off);
+        let acc_off = access::<ArchivedTzOffset, CaptureError>(&off_buf.0[..off_len]).unwrap();
+        assert_eq!(first_off, *acc_off);
+        assert_eq!(*acc_off, *acc_off);
+        assert_eq!(format!("{:?}", *acc_off), format!("{:?}", first_off));
+
+        // Compare distinct span indices with equal FixedTimespan (if a repeating-rule zone exists)
+        // and unequal offsets.
+        for &tz in TZ_VARIANTS.iter() {
+            if tz.timespans().len() > 1 {
+                let tz_first = *sad_chrono::DateTime::<sad_chrono::Utc>::MIN_UTC
+                    .with_timezone(&tz)
+                    .offset();
+                let tz_second = tz_first.next_offset().unwrap();
+                let b1 = archive_no_alloc(&tz_first);
+                let b2 = archive_no_alloc(&tz_second);
+                let a1 = access::<ArchivedTzOffset, CaptureError>(&b1.0[..off_len]).unwrap();
+                let a2 = access::<ArchivedTzOffset, CaptureError>(&b2.0[..off_len]).unwrap();
+                if tz_first != tz_second {
+                    assert_ne!(*a1, *a2);
+                    assert_ne!(tz_first, *a2);
+                }
+                // Check same-offset-different-index if this timezone repeats an offset
+                let mut iter = tz_first.iter();
+                if let Some(a) = iter.next() {
+                    if let Some(b) = iter.find(|cand| *cand == a && cand.index != a.index) {
+                        let b1 = archive_no_alloc(&a);
+                        let b2 = archive_no_alloc(&b);
+                        let ao1 =
+                            access::<ArchivedTzOffset, CaptureError>(&b1.0[..off_len]).unwrap();
+                        let ao2 =
+                            access::<ArchivedTzOffset, CaptureError>(&b2.0[..off_len]).unwrap();
+                        assert_ne!(ao1.index.to_native(), ao2.index.to_native());
+                        assert_eq!(*ao1, *ao2);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Invalid ArchivedTzOffset (out-of-range span index and invalid tz discriminant)
+        let oob_idx = u16::try_from(first_tz.timespans().rest.len() + 1).unwrap_or(u16::MAX);
+        let bad_off_idx = ArchivedTzOffset {
+            tz: ArchivedTz(Archived::<u16>::from_native(first_tz as u16)),
+            index: Archived::<u16>::from_native(oob_idx),
+        };
+        let bad_off_idx_2 = ArchivedTzOffset {
+            tz: ArchivedTz(Archived::<u16>::from_native(first_tz as u16)),
+            index: Archived::<u16>::from_native(u16::MAX),
+        };
+        let bad_off_tz = ArchivedTzOffset {
+            tz: ArchivedTz(Archived::<u16>::from_native(bad_disc)),
+            index: Archived::<u16>::from_native(0),
+        };
+
+        assert_eq!(bad_off_idx.to_tz_offset(), None);
+        assert_eq!(bad_off_tz.to_tz_offset(), None);
+        assert!(format!("{bad_off_idx:?}").starts_with("ArchivedTzOffset::Invalid"));
+        assert!(format!("{bad_off_tz:?}").starts_with("ArchivedTzOffset::Invalid"));
+
+        assert_eq!(bad_off_idx, bad_off_idx);
+        assert_ne!(bad_off_idx, bad_off_idx_2);
+        assert_ne!(bad_off_idx, bad_off_tz);
+        assert_ne!(*acc_off, bad_off_idx);
+        assert_ne!(bad_off_idx, *acc_off);
+        assert_ne!(first_off, bad_off_idx);
+        assert_ne!(first_off, bad_off_tz);
+
+        // SAFETY: `ArchivedTzOffset` is `#[repr(C)]` with zero padding (4 bytes, NoUndef).
+        let bad_off_bytes =
+            unsafe { core::slice::from_raw_parts((&raw const bad_off_idx).cast::<u8>(), off_len) };
+        let off_acc_err = access::<ArchivedTzOffset, CaptureError>(bad_off_bytes).unwrap_err();
+        assert!(off_acc_err
+            .to_string()
+            .contains("archived TzOffset span index is out of range for timezone"));
+        let off_dec_err = from_bytes::<TzOffset, CaptureError>(bad_off_bytes).unwrap_err();
+        assert!(off_dec_err
+            .to_string()
+            .contains("archived TzOffset span index is out of range for timezone"));
+
+        for invalid in [bad_off_idx, bad_off_tz] {
+            let direct_off_err = <ArchivedTzOffset as Deserialize<TzOffset, _>>::deserialize(
+                &invalid,
+                Strategy::<_, CaptureError>::wrap(&mut unit),
+            )
+            .unwrap_err();
+            assert!(direct_off_err
+                .to_string()
+                .contains("archived TzOffset span index is out of range for timezone"));
+        }
+    }
+
     #[cfg(not(feature = "filter-by-regex"))]
     #[test]
     fn golden_wire_bytes_pinned() {
