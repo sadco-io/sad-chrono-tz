@@ -10,6 +10,9 @@ CHRONO_TZ_TIMEZONE_FILTER='^(Europe/(London|Vaduz)|America/Argentina/Buenos_Aire
 CHRONO_TZ_TIMEZONE_FILTER='^Europe/London$' \
     cargo test -p sad-chrono-tz --doc --features filter-by-regex --color=always
 
+CHRONO_TZ_TIMEZONE_FILTER='^Europe/London$' \
+    cargo test -p sad-chrono-tz --lib --features filter-by-regex,rkyv --color=always -- --color=always
+
 CHRONO_TZ_TIMEZONE_FILTER='^Europe/Vaduz$' \
     cargo check -p sad-chrono-tz --features filter-by-regex --color=always
 

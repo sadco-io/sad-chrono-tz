@@ -38,6 +38,7 @@ include = [
 arbitrary = { version = "1.4", optional = true, features = ["derive"] }
 sad-chrono = { version = "0.5.1", default-features = false }
 defmt = { version = "1.2", optional = true }
+rkyv = { version = "0.8.18", optional = true, default-features = false }
 serde_core = { version = "1.0.220", optional = true, default-features = false }
 phf = { version = "0.14", default-features = false }
 uncased = { version = "0.9", optional = true, default-features = false }
@@ -46,6 +47,7 @@ uncased = { version = "0.9", optional = true, default-features = false }
 default = ["std"]
 std = []
 defmt = ["dep:defmt"]
+rkyv = ["dep:rkyv", "rkyv/bytecheck"]
 serde = ["dep:serde_core"]
 filter-by-regex = ["chrono-tz-build", "chrono-tz-build/filter-by-regex"]
 case-insensitive = ["dep:uncased", "chrono-tz-build", "chrono-tz-build/case-insensitive", "phf/uncased"]

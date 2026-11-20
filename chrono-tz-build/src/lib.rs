@@ -41,9 +41,12 @@ const DIRECTORY_ROOT_RESERVED: &[&str] = &[
     "OffsetName",
     "TzOffset",
     "TzOffsetIter",
+    "ArchivedTz",
+    "ArchivedTzOffset",
     "prebuilt",
     "binary_search",
     "timezone_impl",
+    "rkyv",
     "serde",
 ];
 

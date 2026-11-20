@@ -1,0 +1,12 @@
+[package]
+name = "check-rkyv"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dev-dependencies]
+rkyv = { version = "0.8.18", default-features = false, features = ["alloc", "bytecheck", "pointer_width_32"] }
+sad-chrono = { version = "0.5.1", default-features = false, features = ["rkyv-32", "rkyv-validation"] }
+sad-chrono-tz = { path = "../..", features = ["rkyv"] }
+
+[workspace]

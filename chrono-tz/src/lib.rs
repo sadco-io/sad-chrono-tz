@@ -141,6 +141,8 @@
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "rkyv")]
+mod rkyv;
 #[cfg(feature = "serde")]
 mod serde;
 
@@ -167,6 +169,8 @@ mod timezones {
     include!(concat!(env!("OUT_DIR"), "/timezones.rs"));
 }
 
+#[cfg(feature = "rkyv")]
+pub use crate::rkyv::{ArchivedTz, ArchivedTzOffset};
 pub use crate::timezone_impl::{GapInfo, OffsetComponents, OffsetName, TzOffset, TzOffsetIter};
 pub use directory::*;
 pub use timezones::ParseError;

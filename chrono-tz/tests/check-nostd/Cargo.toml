@@ -14,5 +14,6 @@ sad-chrono-tz = { path = "../../", default-features = false }
 serde1 = ["sad-chrono-tz/serde"]
 case-insensitive = ["sad-chrono-tz/case-insensitive"]
 defmt = ["sad-chrono-tz/defmt"]
+rkyv = ["sad-chrono-tz/rkyv"]
 
 [workspace]

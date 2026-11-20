@@ -10,11 +10,13 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+rkyv = { version = "0.8.18", default-features = false, features = ["bytecheck"] }
+sad-chrono = { version = "0.5.1", default-features = false }
 serde_json = "1"
 
 [dependencies.sad-chrono-tz]
 path = "../chrono-tz"
-features = ["serde", "case-insensitive"]
+features = ["serde", "case-insensitive", "rkyv"]
 
 [dependencies.sad-parse-zoneinfo]
 path = "../parse-zoneinfo"
@@ -38,3 +40,7 @@ path = "fuzz_targets/fuzz_tz_from_str.rs"
 [[bin]]
 name = "fuzz_tz_serde"
 path = "fuzz_targets/fuzz_tz_serde.rs"
+
+[[bin]]
+name = "fuzz_tz_rkyv"
+path = "fuzz_targets/fuzz_tz_rkyv.rs"
