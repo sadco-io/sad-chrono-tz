@@ -28,12 +28,15 @@ jobs:
       - run: cargo fmt --all -- --check --color=always
       - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check --color=always
       - run: cargo fmt --manifest-path chrono-tz/tests/check-rename/Cargo.toml -- --check --color=always
+      - run: cargo fmt --manifest-path chrono-tz/tests/check-rkyv/Cargo.toml -- --check --color=always
       - run: |
           cargo clippy --workspace --all-targets --color=always -- -D warnings
       - run: |
           cargo clippy --workspace --all-features --all-targets --color=always -- -D warnings
       - run: |
           cargo clippy --workspace --no-default-features --all-targets --color=always -- -D warnings
+      - run: |
+          cargo clippy --manifest-path chrono-tz/tests/check-rkyv/Cargo.toml --all-targets --color=always -- -D warnings
       - run: |
           cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --color=always -- -D warnings
 
@@ -193,4 +196,6 @@ jobs:
       - run: cargo fuzz run fuzz_tz_from_str -- -max_total_time=60
         working-directory: fuzz
       - run: cargo fuzz run fuzz_tz_serde -- -max_total_time=60
+        working-directory: fuzz
+      - run: cargo fuzz run fuzz_tz_rkyv -- -max_total_time=60
         working-directory: fuzz

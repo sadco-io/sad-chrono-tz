@@ -1,6 +1,6 @@
 [package]
 name = "sad-chrono-tz"
-version = "0.11.0"
+version = "0.11.1"
 edition = "2021"
 rust-version = "1.85.0"
 build = "build.rs"
@@ -53,12 +53,12 @@ filter-by-regex = ["chrono-tz-build", "chrono-tz-build/filter-by-regex"]
 case-insensitive = ["dep:uncased", "chrono-tz-build", "chrono-tz-build/case-insensitive", "phf/uncased"]
 
 [build-dependencies]
-chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.6.0", optional = true }
+chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.6.1", optional = true }
 
 [dev-dependencies]
 serde_test = "1"
 sad-chrono = { version = "0.5.1", default-features = false, features = ["alloc"] }
-chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.6.0" }
+chrono-tz-build = { package = "sad-chrono-tz-build", path = "../chrono-tz-build", version = "0.6.1" }
 
 [package.metadata.docs.rs]
 all-features = true

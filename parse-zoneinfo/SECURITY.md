@@ -14,8 +14,10 @@
 This policy covers all three crates in the workspace, with distinct threat models:
 
 - **`sad-chrono-tz`** (runtime): Callers may supply untrusted timezone strings (`FromStr`,
-  `Tz::from_str_insensitive`, `serde::Deserialize`) or dates/timestamps (`TimeZone`, `Offset`, and
-  `GapInfo` lookups against precompiled or regex-filtered tables).
+  `Tz::from_str_insensitive`, `serde::Deserialize`), untrusted `rkyv` archived bytes
+  (`ArchivedTz`, `ArchivedTzOffset`, and `sad_chrono::DateTime<Tz>` `CheckBytes` /
+  `Deserialize`), or dates/timestamps (`TimeZone`, `Offset`, and `GapInfo` lookups against
+  precompiled or regex-filtered tables).
 - **`sad-chrono-tz-build`** (build-time): Exposure requires control over the
   `CHRONO_TZ_TIMEZONE_FILTER` environment variable or custom/replaced `tz/` zoneinfo inputs;
   validation errors detected before writing starts fail code generation cleanly without writing

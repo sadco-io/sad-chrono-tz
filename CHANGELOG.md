@@ -5,6 +5,59 @@ ChangeLog for sad-chrono-tz
 [chrono-tz](https://github.com/chronotope/chrono-tz). Entries reference the
 upstream pull request or issue each change came from as `chrono-tz#NNNN`.
 
+## sad-chrono-tz 0.11.1 / sad-chrono-tz-build 0.6.1
+
+Additive performance, memory-footprint, transition-API, and `rkyv 0.8` release
+on the `0.11.x` line (`sad-parse-zoneinfo` remains `0.6.0` unchanged). Preserves
+100% semver compatibility with `sad-chrono-tz 0.11.0` and identical transition
+behavior across all 597 `TZ_VARIANTS`.
+
+### Packed `TzOffset` & `FixedTimespan` (`chrono-tz#165`, pitdicker)
+
+* Pack `FixedTimespan` in generated tables (`offset: i32` encoding 18-bit
+  signed `utc_offset` and 14-bit signed `dst_offset`, plus `abbr_start: u16` /
+  `abbr_len: u8` indexing into an interned `ABBREVIATIONS` table, with
+  `abbr_len == u8::MAX` preserving `None` for `%z` numeric offsets).
+* Store `TzOffset` as `(tz: Tz, index: u16)` (`4` bytes vs `32` bytes in
+  `0.11.0`; `sad_chrono::DateTime<Tz>` shrinks from `48` bytes to `16` bytes),
+  preserving `0.11.0` `PartialEq` semantics across distinct transition spans
+  with identical offset components and abbreviation.
+* Reduce `libsad_chrono_tz.rlib` size from `11.58 MB` (`11,583,032` bytes) to
+  `7.07 MB` (`7,074,848` bytes) (~39% reduction) and regenerate
+  `chrono-tz/src/prebuilt/{directory,timezones}.rs`.
+* Add build-time packing bounds checks in `sad-chrono-tz-build 0.6.1`
+  verifying `utc_offset` (`-131_072..=131_071`), `dst_offset` (`-8_192..=8_191`),
+  abbreviation length (`<= 64`, `!= u8::MAX`), `ABBREVIATIONS` length
+  (`<= u16::MAX`), zone count (`<= u16::MAX`), and per-zone span count
+  (`<= u16::MAX`).
+
+### `TzOffset` validity bounds & transition iteration (`chrono-tz#199`, gharveymn)
+
+* Add inherent `#![no_std]` methods on `TzOffset`: `valid_starting()`,
+  `valid_until()`, `next_offset()`, `prev_offset()`, and `iter()`, plus
+  exported `TzOffsetIter` (`ExactSizeIterator`, `FusedIterator`, `Copy`,
+  `Clone`, `Debug`, `PartialEq`, `Eq`), preserving `0.11.0` `OffsetComponents`
+  trait signatures and dyn-compatibility.
+
+### Optional `rkyv 0.8` support
+
+* Add feature `rkyv` (`rkyv = "0.8.18"`, `rkyv/bytecheck`, no `alloc` or
+  `pointer_width_*` forced) exporting `ArchivedTz` and `ArchivedTzOffset`,
+  interoperating seamlessly with `sad-chrono` `0.5.1` (`DateTime<Tz>` `Verify`
+  and `rkyv-16`/`rkyv-32`/`rkyv-64`/`rkyv`).
+* `CheckBytes` and `Deserialize` fail closed on out-of-range `Tz` discriminants
+  (`>= TZ_VARIANTS.len()`, including under `filter-by-regex`) and
+  out-of-bounds `TzOffset` span indices (`> tz.timespans().rest.len()`).
+* Add `chrono-tz/tests/check-rkyv` integration suite, `check-nostd` `rkyv`
+  target coverage, `filter-by-regex` + `rkyv` test coverage, and `fuzz_tz_rkyv`
+  fuzz target.
+
+### CI
+
+* Switch `.github/workflows/lint.yml` `semver` job to compare directly against
+  published `sad-chrono-tz` on crates.io, add `check-rkyv` and `rkyv`
+  no-std/feature checks to CI, and add `fuzz_tz_rkyv` to the `fuzz` job.
+
 ## sad-chrono-tz 0.11.0 / sad-chrono-tz-build 0.6.0 / sad-parse-zoneinfo 0.6.0
 
 Current release line targeting `sad-chrono = "0.5.1"` (`0.5.1+`) with MSRV

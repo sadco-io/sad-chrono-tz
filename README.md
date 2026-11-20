@@ -42,8 +42,8 @@ current dependencies**. It is not upstream's unreleased `chrono-tz 0.11` breakin
 
 | Crate | Version | License | Purpose |
 |---|---|---|---|
-| `sad-chrono-tz` | `0.11.0` | `MIT OR Apache-2.0` | Precompiled IANA `Tz` enum & `TimeZone` impls for `sad-chrono 0.5` (`0.5.1+`) |
-| `sad-chrono-tz-build` | `0.6.0` | `MIT OR Apache-2.0` | Build script codegen (used by `filter-by-regex` and `case-insensitive`) |
+| `sad-chrono-tz` | `0.11.1` | `MIT OR Apache-2.0` | Precompiled IANA `Tz` enum & `TimeZone` impls for `sad-chrono 0.5` (`0.5.1+`) |
+| `sad-chrono-tz-build` | `0.6.1` | `MIT OR Apache-2.0` | Build script codegen (used by `filter-by-regex` and `case-insensitive`) |
 | `sad-parse-zoneinfo` | `0.6.0` | `MIT` | Textual IANA zoneinfo parser and transition table builder |
 
 ## Usage
@@ -56,7 +56,7 @@ To switch existing `chrono` + `chrono-tz` code without changing `use chrono::...
 ```toml
 [dependencies]
 chrono = { package = "sad-chrono", version = "0.5.1" }
-chrono-tz = { package = "sad-chrono-tz", version = "0.11.0" }
+chrono-tz = { package = "sad-chrono-tz", version = "0.11.1" }
 ```
 
 ### Direct usage
@@ -64,7 +64,7 @@ chrono-tz = { package = "sad-chrono-tz", version = "0.11.0" }
 ```toml
 [dependencies]
 sad-chrono = "0.5.1"
-sad-chrono-tz = "0.11.0"
+sad-chrono-tz = "0.11.1"
 ```
 
 ```rust
@@ -143,7 +143,7 @@ Libraries can switch with the same rename:
 ```toml
 [dependencies]
 chrono = { package = "sad-chrono", version = "0.5.1" }
-chrono-tz = { package = "sad-chrono-tz", version = "0.11.0" }
+chrono-tz = { package = "sad-chrono-tz", version = "0.11.1" }
 ```
 
 Because the dependency keys stay `chrono` and `chrono-tz`, your `use chrono::...` and
@@ -210,6 +210,13 @@ only if a dependency's security fix requires it.
   at `chrono-tz/src/lib.rs`). Disable (`default-features = false`) for `#![no_std]` with zero
   `alloc` usage; `ParseError` implements `core::error::Error` independently of `std`.
 * `serde`: Enables `Serialize` and `Deserialize` for `Tz` via `serde_core`.
+* `rkyv`: Enables `rkyv 0.8` (`0.8.18`) zero-copy `Archive`, `Serialize`, `Deserialize`, and
+  fail-closed `CheckBytes` validation (`ArchivedTz`, `ArchivedTzOffset`) for `Tz`, `TzOffset`, and
+  `sad_chrono::DateTime<Tz>`. Works in `#![no_std]` without `alloc` and does not force a
+  pointer-width feature (compatible with `sad-chrono`'s `rkyv-16`, `rkyv-32`, `rkyv-64`, and
+  `rkyv`). Note that `ArchivedTz` stores the compiled variant index into `TZ_VARIANTS`, so
+  archives must be regenerated if `filter-by-regex` changes the compiled zone set or if a future
+  IANA tzdb release adds or removes variants.
 * `case-insensitive`: Enables `Tz::from_str_insensitive` (invokes `sad-chrono-tz-build` at build time).
 * `filter-by-regex`: Filters compiled zones via `CHRONO_TZ_TIMEZONE_FILTER` (invokes `sad-chrono-tz-build`).
 * `arbitrary`: Derives `arbitrary::Arbitrary` for `Tz`.
@@ -225,7 +232,7 @@ the optional `defmt` feature, which requires Rust **`1.81+`**).
 
 * `sad-chrono-tz` and `sad-chrono-tz-build` are licensed under either of
   [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT), at your option.
-* `sad-parse-zoneinfo` is licensed under the [MIT License](https://github.com/sadco-io/sad-chrono-tz/blob/v0.11.0/parse-zoneinfo/LICENSE-MIT).
+* `sad-parse-zoneinfo` is licensed under the [MIT License](https://github.com/sadco-io/sad-chrono-tz/blob/v0.11.1/parse-zoneinfo/LICENSE-MIT).
 * The IANA Time Zone Database files in `chrono-tz/tz/` are in the public domain.
 
 See [NOTICE](NOTICE) for attribution and a summary of modifications, and [SECURITY.md](SECURITY.md)
