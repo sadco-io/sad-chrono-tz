@@ -70,4 +70,51 @@ mod tests {
         // Exactly the four filtered zones should be present.
         assert_eq!(TZ_VARIANTS.len(), 4);
     }
+
+    #[cfg(feature = "rkyv")]
+    #[test]
+    fn rkyv_respects_filtered_variant_count() {
+        use core::mem::MaybeUninit;
+        use rkyv::{
+            api::low::{access, from_bytes, to_bytes_in_with_alloc},
+            rancor::Failure,
+            ser::{allocator::SubAllocator, writer::Buffer},
+            util::Align,
+        };
+        use sad_chrono_tz::{ArchivedTz, ArchivedTzOffset, TzOffset};
+
+        assert_eq!(TZ_VARIANTS.len(), 4);
+        for &tz in TZ_VARIANTS.iter() {
+            let mut raw = [MaybeUninit::<u8>::uninit(); 16];
+            let mut alloc = [MaybeUninit::<u8>::uninit(); 64];
+            let buf = to_bytes_in_with_alloc::<_, _, Failure>(
+                &tz,
+                Buffer::from(&mut raw[..]),
+                SubAllocator::new(&mut alloc),
+            )
+            .unwrap();
+            assert_eq!(from_bytes::<Tz, Failure>(&buf).unwrap(), tz);
+
+            let dt = tz.with_ymd_and_hms(2024, 7, 15, 12, 0, 0).unwrap();
+            let off = *dt.offset();
+            let mut off_raw = [MaybeUninit::<u8>::uninit(); 16];
+            let mut off_alloc = [MaybeUninit::<u8>::uninit(); 64];
+            let off_buf = to_bytes_in_with_alloc::<_, _, Failure>(
+                &off,
+                Buffer::from(&mut off_raw[..]),
+                SubAllocator::new(&mut off_alloc),
+            )
+            .unwrap();
+            assert_eq!(from_bytes::<TzOffset, Failure>(&off_buf).unwrap(), off);
+        }
+
+        // Discriminant 4 (== TZ_VARIANTS.len()) must fail closed under filter-by-regex.
+        let mut bad_tz = Align([0u8; 2]);
+        bad_tz.0.copy_from_slice(&(TZ_VARIANTS.len() as u16).to_le_bytes());
+        assert!(access::<ArchivedTz, Failure>(&bad_tz.0).is_err());
+
+        let mut bad_off = Align([0u8; 4]);
+        bad_off.0[0..2].copy_from_slice(&(TZ_VARIANTS.len() as u16).to_le_bytes());
+        assert!(access::<ArchivedTzOffset, Failure>(&bad_off.0).is_err());
+    }
 }
