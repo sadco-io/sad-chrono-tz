@@ -657,7 +657,7 @@ impl FixedTimespanSetBuilder {
                     } else {
                         active.base_ts
                     };
-                    if earliest.map_or(true, |(_, best)| ts_i128 < best) {
+                    if earliest.is_none_or(|(_, best)| ts_i128 < best) {
                         earliest = Some((i, ts_i128));
                     }
                 }

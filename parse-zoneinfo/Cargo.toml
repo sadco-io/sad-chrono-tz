@@ -1,8 +1,8 @@
 [package]
 name = "sad-parse-zoneinfo"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
-rust-version = "1.66.0"
+rust-version = "1.85.0"
 authors = ["Sadco Security Team", "Benjamin Sago", "The chrono-tz contributors"]
 description = "Parse zoneinfo files from the IANA database"
 homepage = "https://github.com/sadco-io/sad-chrono-tz"

@@ -13,7 +13,7 @@
 [docsrs-image]: https://docs.rs/sad-chrono-tz/badge.svg
 [docsrs]: https://docs.rs/sad-chrono-tz
 [license-image]: https://img.shields.io/badge/license-Apache2.0/MIT-blue.svg
-[msrv-image]: https://img.shields.io/badge/rustc-1.66+-blue.svg
+[msrv-image]: https://img.shields.io/badge/rustc-1.85+-blue.svg
 
 IANA timezone implementations for [`sad-chrono`](https://github.com/sadco-io/sad-chrono): a
 **maintained fork of [chrono-tz][upstream]** (API-compatible for the verified runtime surface) with
@@ -26,13 +26,25 @@ Upstream `chronotope/chrono-tz` has been archived and unmaintained
 Security Team alongside [sad-chrono](https://github.com/sadco-io/sad-chrono) and
 [sad-rsa](https://github.com/sadco-io/sad-rsa).
 
+## Which version?
+
+* **`0.11.x`** (recommended, `main`): targets **`sad-chrono 0.5`** (`0.5.1+`), MSRV `1.85.0`,
+  `phf 0.14`, `defmt 1.2`, `ParseError` implementing `core::error::Error` independently of `std`,
+  IANA `2026f`.
+* **`0.10.x`** (`0.10.x` maintenance branch, security & tzdb fixes only): targets
+  **`sad-chrono 0.4`** (`0.4.48+`), MSRV `1.66.0` (with `defmt 1.0.1` requiring Rust `1.81+`),
+  `phf 0.13`.
+
+`sad-chrono-tz 0.11` is **`chrono-tz 0.10`'s verified runtime API with `sad-chrono 0.5` and
+current dependencies**. It is not upstream's unreleased `chrono-tz 0.11` breaking API.
+
 ## Workspace Crates
 
 | Crate | Version | License | Purpose |
 |---|---|---|---|
-| `sad-chrono-tz` | `0.10.5` | `MIT OR Apache-2.0` | Precompiled IANA `Tz` enum & `TimeZone` impls for `sad-chrono 0.4` (`0.4.48+`) |
-| `sad-chrono-tz-build` | `0.5.1` | `MIT OR Apache-2.0` | Build script codegen (used by `filter-by-regex` and `case-insensitive`) |
-| `sad-parse-zoneinfo` | `0.5.1` | `MIT` | Textual IANA zoneinfo parser and transition table builder |
+| `sad-chrono-tz` | `0.11.0` | `MIT OR Apache-2.0` | Precompiled IANA `Tz` enum & `TimeZone` impls for `sad-chrono 0.5` (`0.5.1+`) |
+| `sad-chrono-tz-build` | `0.6.0` | `MIT OR Apache-2.0` | Build script codegen (used by `filter-by-regex` and `case-insensitive`) |
+| `sad-parse-zoneinfo` | `0.6.0` | `MIT` | Textual IANA zoneinfo parser and transition table builder |
 
 ## Usage
 
@@ -43,16 +55,16 @@ To switch existing `chrono` + `chrono-tz` code without changing `use chrono::...
 
 ```toml
 [dependencies]
-chrono = { package = "sad-chrono", version = "0.4.48" }
-chrono-tz = { package = "sad-chrono-tz", version = "0.10.5" }
+chrono = { package = "sad-chrono", version = "0.5.1" }
+chrono-tz = { package = "sad-chrono-tz", version = "0.11.0" }
 ```
 
 ### Direct usage
 
 ```toml
 [dependencies]
-sad-chrono = "0.4.48"
-sad-chrono-tz = "0.10.5"
+sad-chrono = "0.5.1"
+sad-chrono-tz = "0.11.0"
 ```
 
 ```rust
@@ -70,27 +82,30 @@ assert_eq!(utc_time, Utc.with_ymd_and_hms(1990, 5, 6, 19, 30, 45).unwrap());
 `rustc`. A `TimeZone` implementation must depend on the exact same `sad-chrono` major/minor line
 that your application uses:
 
+* **`sad-chrono-tz 0.11.x`** targets **`sad-chrono = "0.5.1"`** (MSRV `1.85.0`) and preserves
+  `chrono-tz 0.10.4`'s verified runtime public API (`Default for Tz` when `UTC` is included,
+  `pub trait OffsetComponents`, `OffsetName::abbreviation(&self) -> Option<&str>`).
 * **`sad-chrono-tz 0.10.x`** targets **`sad-chrono = "0.4.48"`** (MSRV `1.66.0`, except `defmt`
-  requiring Rust `1.81+`) and preserves `chrono-tz 0.10.4`'s verified runtime public API
-  (`Default for Tz` when `UTC` is included, `pub trait OffsetComponents`,
-  `OffsetName::abbreviation(&self) -> Option<&str>`).
+  requiring Rust `1.81+`) with the same verified runtime API.
 * If you depend on upstream `chrono` instead, `sad_chrono_tz::Tz` will not satisfy
   `chrono::TimeZone` directly (the compiler will report `` `Tz` implements similarly named trait
   `sad_chrono::offset::TimeZone` ``).
 
 ### Transitive dependencies (`[patch.crates-io]`)
 
-Cargo `[patch]` matches both package name and compatible semver version, so renaming
-`chrono-tz = { package = "sad-chrono-tz", ... }` in `[patch.crates-io]` is ignored. Applications
-that pull upstream `chrono-tz` transitively through third-party crates (and cannot patch every
-dependency's `Cargo.toml`) can vendor a release tag and set its package names to match upstream,
+This route uses the `0.10.x` line (MSRV `1.66.0` for non-`defmt` features) alongside
+`sad-chrono 0.4.x`, because Cargo `[patch]` matches both package name and compatible semver
+version (`[patch.crates-io] chrono-tz = { package = "sad-chrono-tz", ... }` and `0.11.x` copies
+are ignored when crates depend on `chrono-tz = "^0.10"`). Applications that pull upstream
+`chrono-tz` transitively through third-party crates (and cannot patch every dependency's
+`Cargo.toml`) can vendor a `v0.10.*` release tag and set its package names to match upstream,
 alongside vendoring `sad-chrono 0.4.x` as `chrono`. Note that `[patch.crates-io]` only applies at
 the top-level binary workspace.
 
 ## Compatibility with `chrono-tz 0.10.4`
 
-`sad-chrono-tz 0.10.5` is API-compatible with `chrono-tz 0.10.4` for the verified runtime surface
-and supported feature configurations targeting `sad-chrono 0.4` (`0.4.48+`):
+`sad-chrono-tz 0.11.0` is API-compatible with `chrono-tz 0.10.4` for the verified runtime surface
+and supported feature configurations targeting `sad-chrono 0.5` (`0.5.1+`):
 
 * **Public runtime API**: Verified against `chrono-tz 0.10.4` (`Tz`, `TZ_VARIANTS`,
   `IANA_TZDB_VERSION`, `ParseError`, `TzOffset`, `OffsetName`, `OffsetComponents`, `GapInfo`, and
@@ -106,13 +121,13 @@ and supported feature configurations targeting `sad-chrono 0.4` (`0.4.48+`):
   (`America/Edmonton`), British Columbia (`America/Vancouver`), Northwest Territories
   (`America/Inuvik`), Morocco & Western Sahara (`Africa/Casablanca`, `Africa/El_Aaiun`), Moldova
   (`Europe/Chisinau`), and POSIX `USback` rules (`EST5EDT`, `CST6CDT`, `MST7MDT`, `PST8PDT`).
-* **Upstream improvements included**: `%z` formatting in `sad-parse-zoneinfo` (`0.5.1`, where
+* **Upstream improvements included**: `%z` formatting in `sad-parse-zoneinfo` (`0.6.0`, where
   `Format::format` takes three arguments as in `chrono-tz#211` / `parse-zoneinfo 0.5.0` vs two in
   `0.4.0`), link deduplication in `sad-chrono-tz-build`, `CHRONO_TZ_TIMEZONE_FILTER` regex filtering
   selecting only zones whose names match the regex (`chrono-tz#218`, no longer pulling in unrelated
   `Etc/GMT*`/`UTC` zones; use anchors such as `^...$` for whole-name matching, and an unset or
-  blank value leaves all zones enabled), `serde_core` dependency (`serde` feature), `phf 0.13`, MSRV
-  `1.66.0`, and optional `defmt` (`1.0.1`, Rust `1.81+`).
+  blank value leaves all zones enabled), `serde_core` dependency (`serde` feature), `phf 0.14`, MSRV
+  `1.85.0`, `core::error::Error` for `ParseError`, and optional `defmt` (`1.2`) support.
 * **Packaging**: Symlinked `LICENSE` files replaced with real `LICENSE-MIT` and `LICENSE-APACHE`
   files (`sad-chrono-tz` and `sad-chrono-tz-build` carry `MIT` and `Apache-2.0` texts;
   `sad-parse-zoneinfo` carries `MIT`).
@@ -120,6 +135,49 @@ and supported feature configurations targeting `sad-chrono 0.4` (`0.4.48+`):
   only zones whose names match the regex (use anchors such as `^...$` for whole-name matching; an
   unset or blank value leaves all zones enabled), with no implicit `UTC`/`Etc/GMT*` inclusion, and
   fails the build cleanly if zero zones match.
+
+## For library authors
+
+Libraries can switch with the same rename:
+
+```toml
+[dependencies]
+chrono = { package = "sad-chrono", version = "0.5.1" }
+chrono-tz = { package = "sad-chrono-tz", version = "0.11.0" }
+```
+
+Because the dependency keys stay `chrono` and `chrono-tz`, your `use chrono::...` and
+`use chrono_tz::...` paths and feature names keep working. Enable every feature you use
+explicitly: features of `chrono-tz` and `sad-chrono-tz` do not unify.
+
+**Which line?** Depending on `sad-chrono-tz = "0.11"` requires Rust `1.85.0` and pairs with
+`sad-chrono = "0.5.1"`. Libraries that must support Rust `< 1.85.0` or `sad-chrono = "0.4"` (for
+example `rkyv 0.7` builds) can target `sad-chrono-tz = "0.10"` (`0.10.x` branch), noting that
+`sad-chrono-tz 0.10` and `0.11` depend on distinct `sad-chrono` major/minor versions (`0.4` vs
+`0.5`) whose types do not interoperate — moving a library's public API from `0.10` to `0.11` is a
+breaking change.
+
+**Is it a breaking change?** `sad_chrono_tz::Tz` and `chrono_tz::Tz` (as well as
+`sad-chrono-tz 0.10` and `0.11`) implement `TimeZone` for distinct `sad-chrono`/`chrono` crates.
+If `Tz`, `TzOffset`, or `chrono::DateTime<Tz>` appear in your public API, switching breaks callers
+that pass upstream `chrono-tz` or `0.10` types. Release the switch as a new semver-major version,
+or gate separate versions behind Cargo features. If you only use `chrono-tz` internally, switching
+is not a breaking change.
+
+## Stability and versioning
+
+`sad-chrono-tz 0.11.x` keeps the verified runtime API surface of `chrono-tz 0.10.4` and will not
+make semver-incompatible API changes within `0.11.x`. `0.11.0` deliberately leaves the `0.10`
+version sequence because the dependency and MSRV upgrades (`sad-chrono 0.5.1`, `phf 0.14`,
+`defmt 1.2`, MSRV `1.85.0`) are breaking changes — it is **not** upstream's unreleased
+`chrono-tz 0.11` breaking API.
+
+The `0.10.x` branch remains maintained for security and IANA tzdb fixes only (targeting
+`sad-chrono 0.4` `0.4.48+`, MSRV `1.66.0` with `defmt 1.0.1` requiring `1.81+`, `phf 0.13`). Each
+release's changelog states which IANA tzdb version and fixes it includes.
+
+MSRV is Rust `1.85.0` for `0.11.x`. Within `0.11.x`, it is raised only with a changelog entry and
+only if a dependency's security fix requires it.
 
 ## Security and Robustness Fixes
 
@@ -148,26 +206,26 @@ and supported feature configurations targeting `sad-chrono 0.4` (`0.4.48+`):
 ## Crate Features
 
 * `default`: Enables `std`.
-* `std`: Enables `std::error::Error` for `ParseError`. Disable (`default-features = false`) for
-  `#![no_std]` with zero `alloc` usage.
+* `std`: Controls the crate's `#![no_std]` attribute (`#![cfg_attr(not(any(feature = "std", test)), no_std)]`
+  at `chrono-tz/src/lib.rs`). Disable (`default-features = false`) for `#![no_std]` with zero
+  `alloc` usage; `ParseError` implements `core::error::Error` independently of `std`.
 * `serde`: Enables `Serialize` and `Deserialize` for `Tz` via `serde_core`.
 * `case-insensitive`: Enables `Tz::from_str_insensitive` (invokes `sad-chrono-tz-build` at build time).
 * `filter-by-regex`: Filters compiled zones via `CHRONO_TZ_TIMEZONE_FILTER` (invokes `sad-chrono-tz-build`).
 * `arbitrary`: Derives `arbitrary::Arbitrary` for `Tz`.
-* `defmt`: Implements `defmt::Format` for `Tz`, `ParseError`, `TzOffset`, and `FixedTimespan`
-  (requires Rust `1.81+` due to upstream `defmt-parser`).
+* `defmt`: Implements `defmt::Format` for `Tz`, `ParseError`, `TzOffset`, and `FixedTimespan`.
 
 ## Rust Version Requirements
 
-MSRV is Rust **`1.66.0`** across `sad-chrono-tz`, `sad-chrono-tz-build`, and `sad-parse-zoneinfo`
-for default and MSRV-compatible features (`std`, `serde`, `filter-by-regex`, `case-insensitive`,
-`arbitrary`). Enabling the optional `defmt` (`1.0.1`) feature requires Rust **`1.81+`**.
+MSRV is Rust **`1.85.0`** across `sad-chrono-tz` (`0.11.x`), `sad-chrono-tz-build` (`0.6.x`), and
+`sad-parse-zoneinfo` (`0.6.x`). The `0.10.x` maintenance branch supports Rust **`1.66.0`** (except
+the optional `defmt` feature, which requires Rust **`1.81+`**).
 
 ## License
 
 * `sad-chrono-tz` and `sad-chrono-tz-build` are licensed under either of
   [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT), at your option.
-* `sad-parse-zoneinfo` is licensed under the [MIT License](https://github.com/sadco-io/sad-chrono-tz/blob/v0.10.5/parse-zoneinfo/LICENSE-MIT).
+* `sad-parse-zoneinfo` is licensed under the [MIT License](https://github.com/sadco-io/sad-chrono-tz/blob/v0.11.0/parse-zoneinfo/LICENSE-MIT).
 * The IANA Time Zone Database files in `chrono-tz/tz/` are in the public domain.
 
 See [NOTICE](NOTICE) for attribution and a summary of modifications, and [SECURITY.md](SECURITY.md)

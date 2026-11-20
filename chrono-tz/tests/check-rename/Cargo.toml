@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-chrono = { package = "sad-chrono", version = "0.4.48" }
+chrono = { package = "sad-chrono", version = "0.5.1" }
 chrono-tz = { package = "sad-chrono-tz", path = "../..", features = ["serde", "case-insensitive"] }
 
 [dev-dependencies]

@@ -13,6 +13,9 @@ fn catch_panic(_e: &PanicInfo) -> ! {
 
 #[entry]
 fn main() -> ! {
+    fn assert_core_error<T: core::error::Error>() {}
+    assert_core_error::<sad_chrono_tz::ParseError>();
+
     assert!(Pacific == Pacific);
 
     loop {}
