@@ -167,7 +167,7 @@ mod timezones {
     include!(concat!(env!("OUT_DIR"), "/timezones.rs"));
 }
 
-pub use crate::timezone_impl::{GapInfo, OffsetComponents, OffsetName, TzOffset};
+pub use crate::timezone_impl::{GapInfo, OffsetComponents, OffsetName, TzOffset, TzOffsetIter};
 pub use directory::*;
 pub use timezones::ParseError;
 pub use timezones::Tz;

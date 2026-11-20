@@ -3,7 +3,7 @@ use core::fmt::{Debug, Display, Error, Formatter, Write};
 
 use sad_chrono::{
     DateTime, Duration, FixedOffset, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset,
-    TimeZone,
+    TimeZone, Utc,
 };
 
 use crate::binary_search::binary_search;
@@ -210,7 +210,142 @@ impl TzOffset {
     pub(crate) fn timespan(&self) -> FixedTimespan {
         self.timespans().get(self.index as usize)
     }
+
+    /// Returns the UTC instant at which this offset became valid, or `None` for the initial
+    /// open-ended span of the timezone.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::{NaiveDate, TimeZone};
+    /// use sad_chrono_tz::America::New_York;
+    ///
+    /// let dt = New_York.with_ymd_and_hms(2024, 7, 1, 12, 0, 0).unwrap();
+    /// let offset = dt.offset();
+    /// let start = offset.valid_starting().unwrap();
+    /// assert_eq!(start, NaiveDate::from_ymd_opt(2024, 3, 10).unwrap().and_hms_opt(7, 0, 0).unwrap().and_utc());
+    /// # }
+    /// ```
+    pub fn valid_starting(&self) -> Option<DateTime<Utc>> {
+        let rest_idx = usize::from(self.index).checked_sub(1)?;
+        let (ts, _) = self.timespans().rest.get(rest_idx)?;
+        DateTime::from_timestamp(*ts, 0)
+    }
+
+    /// Returns the exclusive UTC instant at which this offset ceases to be valid, or `None` for
+    /// the final open-ended span of the timezone.
+    ///
+    /// When `Some(until)` is returned, `until` equals `self.next_offset()?.valid_starting()`.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::{NaiveDate, TimeZone};
+    /// use sad_chrono_tz::America::New_York;
+    ///
+    /// let dt = New_York.with_ymd_and_hms(2024, 7, 1, 12, 0, 0).unwrap();
+    /// let offset = dt.offset();
+    /// assert_eq!(offset.valid_until(), offset.next_offset().unwrap().valid_starting());
+    /// assert_eq!(
+    ///     offset.valid_until().unwrap(),
+    ///     NaiveDate::from_ymd_opt(2024, 11, 3).unwrap().and_hms_opt(6, 0, 0).unwrap().and_utc()
+    /// );
+    /// # }
+    /// ```
+    pub fn valid_until(&self) -> Option<DateTime<Utc>> {
+        let (ts, _) = self.timespans().rest.get(usize::from(self.index))?;
+        DateTime::from_timestamp(*ts, 0)
+    }
+
+    /// Returns the next offset span in this timezone, or `None` if this is the final span.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::TimeZone;
+    /// use sad_chrono_tz::Europe::London;
+    /// use sad_chrono_tz::OffsetName;
+    ///
+    /// let winter = London.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap();
+    /// let next = winter.offset().next_offset().unwrap();
+    /// assert_eq!(next.abbreviation(), Some("BST"));
+    /// # }
+    /// ```
+    pub fn next_offset(&self) -> Option<Self> {
+        let next_idx = self.index.checked_add(1)?;
+        if usize::from(next_idx) < self.timespans().len() {
+            Some(Self {
+                tz: self.tz,
+                index: next_idx,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Returns the previous offset span in this timezone, or `None` if this is the initial span.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::TimeZone;
+    /// use sad_chrono_tz::Europe::London;
+    /// use sad_chrono_tz::OffsetName;
+    ///
+    /// let summer = London.with_ymd_and_hms(2024, 7, 15, 12, 0, 0).unwrap();
+    /// let prev = summer.offset().prev_offset().unwrap();
+    /// assert_eq!(prev.abbreviation(), Some("GMT"));
+    /// # }
+    /// ```
+    pub fn prev_offset(&self) -> Option<Self> {
+        self.index
+            .checked_sub(1)
+            .map(|index| Self { tz: self.tz, index })
+    }
+
+    /// Returns an iterator over this offset and all remaining offset spans for the timezone.
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "filter-by-regex"))]
+    /// # {
+    /// use sad_chrono::TimeZone;
+    /// use sad_chrono_tz::UTC;
+    ///
+    /// let dt = UTC.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    /// assert_eq!(dt.offset().iter().count(), 1);
+    /// # }
+    /// ```
+    pub fn iter(&self) -> TzOffsetIter {
+        TzOffsetIter(Some(*self))
+    }
 }
+
+/// Iterator over consecutive [`TzOffset`] spans in a timezone, starting from a given offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TzOffsetIter(Option<TzOffset>);
+
+impl Iterator for TzOffsetIter {
+    type Item = TzOffset;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let offset = self.0?;
+        self.0 = offset.next_offset();
+        Some(offset)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.0 {
+            Some(off) => {
+                let remaining = off.timespans().len().saturating_sub(usize::from(off.index));
+                (remaining, Some(remaining))
+            }
+            None => (0, Some(0)),
+        }
+    }
+}
+
+impl ExactSizeIterator for TzOffsetIter {}
+impl core::iter::FusedIterator for TzOffsetIter {}
 
 impl OffsetComponents for TzOffset {
     fn base_utc_offset(&self) -> Duration {
@@ -562,5 +697,101 @@ mod tests {
         assert_eq!(opposite.local_span(1).begin, Some(i64::MIN + 3610));
         assert_eq!(opposite.local_span(1).end, Some(i64::MAX));
         assert_eq!(opposite.local_span(2).begin, Some(i64::MAX - 3610));
+    }
+
+    #[test]
+    fn next_prev_and_iter_validity_bounds() {
+        use crate::TZ_VARIANTS;
+
+        // Multi-transition zone (Eastern)
+        #[cfg(not(feature = "filter-by-regex"))]
+        {
+            let eastern = Tz::US__Eastern;
+            let edt = eastern.with_ymd_and_hms(2019, 11, 3, 0, 0, 0).unwrap();
+            let edt_offset = *edt.offset();
+            let next_offset = TzOffset::new(edt_offset.tz, usize::from(edt_offset.index) + 1);
+            assert_eq!(edt_offset.next_offset(), Some(next_offset));
+            assert_eq!(next_offset.prev_offset(), Some(edt_offset));
+            assert_eq!(edt_offset.iter().next(), Some(edt_offset));
+            assert_eq!(edt_offset.iter().nth(1), edt_offset.next_offset());
+            assert_eq!(edt_offset.valid_until(), next_offset.valid_starting());
+
+            // Check actual transition boundary behavior
+            let until = edt_offset.valid_until().unwrap();
+            assert_eq!(
+                (until - Duration::seconds(1))
+                    .with_timezone(&eastern)
+                    .offset(),
+                &edt_offset
+            );
+            assert_eq!(until.with_timezone(&eastern).offset(), &next_offset);
+
+            // Havana 2026f skipped 2026-11-01 fallback -> stays CDT until 2027-11-07 05:00:00 UTC
+            let havana = Tz::America__Havana;
+            let hav_2026 = NaiveDate::from_ymd_opt(2026, 11, 2)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .with_timezone(&havana);
+            let expected_until = NaiveDate::from_ymd_opt(2027, 11, 7)
+                .unwrap()
+                .and_hms_opt(5, 0, 0)
+                .unwrap()
+                .and_utc();
+            assert_eq!(hav_2026.offset().valid_until(), Some(expected_until));
+
+            // Single-span zones (UTC, Etc/GMT+1)
+            for single_tz in [Tz::UTC, Tz::Etc__GMTPlus1] {
+                let off = *DateTime::<Utc>::MIN_UTC.with_timezone(&single_tz).offset();
+                assert_eq!(off.valid_starting(), None);
+                assert_eq!(off.valid_until(), None);
+                assert_eq!(off.next_offset(), None);
+                assert_eq!(off.prev_offset(), None);
+                assert_eq!(off.iter().len(), 1);
+                assert_eq!(off.iter().collect::<Vec<_>>(), vec![off]);
+            }
+        }
+
+        // Exhaustive check across all compiled variants and extreme dates: zero panics/overflows
+        for &tz in TZ_VARIANTS.iter() {
+            let min_dt = DateTime::<Utc>::MIN_UTC.with_timezone(&tz);
+            let max_dt = DateTime::<Utc>::MAX_UTC.with_timezone(&tz);
+            let _ = NaiveDateTime::MIN.and_local_timezone(tz);
+            let _ = NaiveDateTime::MAX.and_local_timezone(tz);
+
+            let first = *min_dt.offset();
+            assert_eq!(first.valid_starting(), None);
+            assert_eq!(first.prev_offset(), None);
+
+            let timespans = tz.timespans();
+            let mut iter = first.iter();
+            assert_eq!(iter.len(), timespans.len());
+
+            let mut prev_start: Option<DateTime<Utc>> = None;
+            let mut prev_off: Option<TzOffset> = None;
+            let mut count = 0usize;
+            for off in &mut iter {
+                count += 1;
+                if let Some(p) = prev_off {
+                    assert_eq!(off.prev_offset(), Some(p));
+                    assert_eq!(p.valid_until(), off.valid_starting());
+                    let start = off.valid_starting().unwrap();
+                    if let Some(ps) = prev_start {
+                        assert!(start > ps);
+                    }
+                    prev_start = Some(start);
+                }
+                prev_off = Some(off);
+            }
+            assert_eq!(count, timespans.len());
+            assert_eq!(iter.len(), 0);
+            assert_eq!(iter.next(), None);
+
+            let last = prev_off.unwrap();
+            assert_eq!(last.valid_until(), None);
+            assert_eq!(last.next_offset(), None);
+            assert_eq!(max_dt.offset().valid_until(), None);
+        }
     }
 }
