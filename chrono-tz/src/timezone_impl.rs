@@ -15,24 +15,35 @@ use crate::timezones::{Tz, ABBREVIATIONS};
 /// `FixedTimespan`s: `EST` and `EDT`, that are variously in effect.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) struct FixedTimespan {
-    /// Encodes `utc_offset` in the upper 18 signed bits and `dst_offset` in the lower 14 signed bits:
-    /// `(utc_offset << 14) | (dst_offset & ((1 << 14) - 1))`.
-    pub(crate) offset: i32,
-    /// Byte offset into `ABBREVIATIONS` when `abbr_len != u8::MAX`.
-    pub(crate) abbr_start: u16,
+    /// Packs `utc_offset` (bits 20..40, 20-bit signed) and `dst_offset` (bits 0..20, 20-bit signed)
+    /// into 5 little-endian bytes, keeping `FixedTimespan` at 8 bytes with zero padding.
+    pub(crate) offset: [u8; 5],
     /// Byte length into `ABBREVIATIONS`, or `u8::MAX` when no explicit abbreviation exists (`%z`).
     pub(crate) abbr_len: u8,
+    /// Byte offset into `ABBREVIATIONS` when `abbr_len != u8::MAX`.
+    pub(crate) abbr_start: u16,
 }
+
+const _: () = assert!(core::mem::size_of::<FixedTimespan>() == 8);
 
 impl FixedTimespan {
     #[inline]
+    const fn packed_u64(&self) -> u64 {
+        (self.offset[0] as u64)
+            | ((self.offset[1] as u64) << 8)
+            | ((self.offset[2] as u64) << 16)
+            | ((self.offset[3] as u64) << 24)
+            | ((self.offset[4] as u64) << 32)
+    }
+
+    #[inline]
     pub(crate) const fn utc_offset(&self) -> i32 {
-        self.offset >> 14
+        (((self.packed_u64() as i64) << 24) >> 44) as i32
     }
 
     #[inline]
     pub(crate) const fn dst_offset(&self) -> i32 {
-        (self.offset << 18) >> 18
+        (((self.packed_u64() as i64) << 44) >> 44) as i32
     }
 
     #[inline]
@@ -48,10 +59,18 @@ impl FixedTimespan {
 
     #[cfg(test)]
     const fn for_test(utc_offset: i32, dst_offset: i32, abbr_start: u16, abbr_len: u8) -> Self {
+        let packed = (((utc_offset as i64 as u64) & 0xF_FFFF) << 20)
+            | ((dst_offset as i64 as u64) & 0xF_FFFF);
         Self {
-            offset: (utc_offset << 14) | (dst_offset & ((1 << 14) - 1)),
-            abbr_start,
+            offset: [
+                packed as u8,
+                (packed >> 8) as u8,
+                (packed >> 16) as u8,
+                (packed >> 24) as u8,
+                (packed >> 32) as u8,
+            ],
             abbr_len,
+            abbr_start,
         }
     }
 }
@@ -100,6 +119,19 @@ impl defmt::Format for FixedTimespan {
     }
 }
 
+/// Offset for a specific transition span within a [`Tz`] timezone.
+///
+/// Validity bounds ([`TzOffset::valid_starting`], [`TzOffset::valid_until`]) and span traversal
+/// ([`TzOffset::next_offset`], [`TzOffset::prev_offset`], [`TzOffset::iter`]) reflect the
+/// generated transition table for the timezone: span starts are inclusive and span ends are
+/// exclusive. Recurring rules in `sad-parse-zoneinfo` expand over `1800..2100` (`2100` excluded);
+/// explicit zone boundaries are processed separately, and lookups extrapolate the outer spans
+/// (for which `valid_starting()` on the first span or `valid_until()` on the final span returns
+/// `None`).
+///
+/// `PartialEq` for `TzOffset` compares the timezone, both offset components, and abbreviation, so
+/// equal `TzOffset` values (such as winter offsets from different years) can still have different
+/// validity bounds.
 #[derive(Copy, Clone, Eq)]
 pub struct TzOffset {
     pub(crate) tz: Tz,
@@ -321,8 +353,21 @@ impl TzOffset {
 }
 
 /// Iterator over consecutive [`TzOffset`] spans in a timezone, starting from a given offset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `PartialEq` compares the iterator cursor position `(tz, index)` (or exhausted state), unlike
+/// [`TzOffset::eq`] which compares offset values.
+#[derive(Clone, Copy, Debug, Eq)]
 pub struct TzOffsetIter(Option<TzOffset>);
+
+impl PartialEq for TzOffsetIter {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.0, other.0) {
+            (Some(a), Some(b)) => a.tz == b.tz && a.index == b.index,
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
 
 impl Iterator for TzOffsetIter {
     type Item = TzOffset;

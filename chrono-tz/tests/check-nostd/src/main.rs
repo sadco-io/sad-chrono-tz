@@ -3,8 +3,8 @@
 
 use core::panic::PanicInfo;
 
-use sad_chrono_tz::US::Pacific;
 use cortex_m_rt::entry;
+use sad_chrono_tz::US::Pacific;
 
 #[panic_handler]
 fn catch_panic(_e: &PanicInfo) -> ! {

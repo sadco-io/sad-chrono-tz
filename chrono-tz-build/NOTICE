@@ -108,18 +108,22 @@ In `sad-chrono-tz` 0.11.0 / `sad-chrono-tz-build` 0.6.0 / `sad-parse-zoneinfo`
 In `sad-chrono-tz` 0.11.1 / `sad-chrono-tz-build` 0.6.1 (`sad-parse-zoneinfo`
 remains 0.6.0), the following additional modifications were made:
 
-- `chrono-tz#165` (pitdicker): packed `FixedTimespan` (18-bit UTC offset +
-  14-bit DST offset, interned `ABBREVIATIONS` string table preserving `None` for
-  `%z` numeric offsets) and `TzOffset` (`(tz: Tz, index: u16)`, 4 bytes;
-  `DateTime<Tz>` 16 bytes) with build-time packing bounds validation in
-  `sad-chrono-tz-build 0.6.1`
+- `chrono-tz#165` (pitdicker): packed `FixedTimespan` (20-bit signed UTC offset +
+  20-bit signed DST offset in `[u8; 5]`, interned `ABBREVIATIONS` string table
+  preserving `None` for `%z` numeric offsets; measured 8 bytes on standard
+  64-bit / native targets) and `TzOffset` (`(tz: Tz, index: u16)`, measured 4
+  bytes; `DateTime<Tz>` measured 16 bytes) with build-time packing and
+  transition-timestamp bounds validation in `sad-chrono-tz-build 0.6.1`
 - `chrono-tz#199` (gharveymn): `TzOffset` validity bounds and transition
   iteration (`valid_starting`, `valid_until`, `next_offset`, `prev_offset`,
   `iter`, and `TzOffsetIter`), adapted as additive `#![no_std]` APIs preserving
   `0.11.0` `OffsetComponents` semver compatibility
-- Optional `rkyv 0.8` (`0.8.18`) support (`ArchivedTz`, `ArchivedTzOffset`)
-  with fail-closed `CheckBytes` validation and `DateTime<Tz>` `Verify`
-  compatibility, plus `check-rkyv` tests and `fuzz_tz_rkyv` fuzz coverage
+- Optional `rkyv 0.8` (`0.8.18`) support (`sad-chrono-tz/rkyv`) enabling
+  checked archives (`ArchivedTz`, `ArchivedTzOffset`) for `Tz` and `TzOffset`
+  via checked access and checked decoding on untrusted bytes (checked
+  `sad_chrono::DateTime<Tz>` archives additionally require a
+  `sad-chrono 0.5.1+` `rkyv*` feature and validate the representable local-time
+  range), plus `check-rkyv` tests and `fuzz_tz_rkyv` fuzz coverage
 
 The upstream fixes listed above were written by their upstream authors; see
 https://github.com/sadco-io/sad-chrono-tz/blob/v0.11.1/CHANGELOG.md for

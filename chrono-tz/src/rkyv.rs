@@ -37,10 +37,16 @@ impl Error for InvalidArchivedTzOffsetError {}
 
 /// Archived representation of [`Tz`].
 ///
-/// Stores the compiled variant index into [`TZ_VARIANTS`] as an [`Archived<u16>`]
-/// (little-endian `u16_le` by default). Because the discriminant is tied to the
-/// compiled [`TZ_VARIANTS`] table, archives must be regenerated if `filter-by-regex`
-/// changes the compiled zone set or if a newer IANA tzdb release adds or removes variants.
+/// `ArchivedTz` stores a 16-bit zone ordinal. `ArchivedTzOffset` also stores a 16-bit span index.
+/// Both fields are little-endian by default. Decode with the same rkyv format configuration and
+/// matching ordered zone and transition tables. An in-range index can resolve differently after a
+/// filter or tzdb change.
+///
+/// Applications requiring cross-build table rejection should verify a fingerprint of the
+/// generated zone and transition tables before decoding ([`IANA_TZDB_VERSION`](crate::IANA_TZDB_VERSION)
+/// alone is insufficient because filtered and full builds share the same tzdb version string). For
+/// `sad_chrono::DateTime<Tz>`, `CheckBytes` verification checks local-time representability under
+/// `sad-chrono`'s stored-offset contract rather than cross-build table identity.
 ///
 /// [`CheckBytes`] fails closed for any discriminant `>= TZ_VARIANTS.len()`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Portable)]
@@ -384,16 +390,24 @@ mod tests {
     fn golden_wire_bytes_pinned() {
         use sad_chrono::TimeZone;
 
-        let london = Tz::Europe__London;
-        let tz_buf = archive_no_alloc(&london);
+        // Nonzero zone ordinal: America::New_York == 170 -> [0xaa, 0x00] (little-endian u16).
+        let ny = Tz::America__New_York;
+        assert_eq!(ny as u16, 170);
+        let tz_buf = archive_no_alloc(&ny);
         let accessed_tz = access::<ArchivedTz, Failure>(&tz_buf.0[..2]).unwrap();
-        assert_eq!(accessed_tz.discriminant(), london as u16);
+        assert_eq!(&tz_buf.0[..2], &[0xaa, 0x00]);
+        assert_eq!(accessed_tz.discriminant(), 170);
+        assert_eq!(*accessed_tz, ny);
 
-        let dt = london.with_ymd_and_hms(2024, 7, 15, 12, 0, 0).unwrap();
+        // Nonzero zone ordinal + nonzero span index: New_York 1918-04-01 EDT == span index 2 -> [0xaa, 0x00, 0x02, 0x00].
+        let dt = ny.with_ymd_and_hms(1918, 4, 1, 12, 0, 0).unwrap();
         let off = *dt.offset();
+        assert_eq!(off.index, 2);
         let off_buf = archive_no_alloc(&off);
         let accessed_off = access::<ArchivedTzOffset, Failure>(&off_buf.0[..4]).unwrap();
-        assert_eq!(accessed_off.tz.discriminant(), london as u16);
-        assert_eq!(accessed_off.index.to_native(), off.index);
+        assert_eq!(&off_buf.0[..4], &[0xaa, 0x00, 0x02, 0x00]);
+        assert_eq!(accessed_off.tz.discriminant(), 170);
+        assert_eq!(accessed_off.index.to_native(), 2);
+        assert_eq!(*accessed_off, off);
     }
 }

@@ -18,7 +18,9 @@ mod tests {
     #[test]
     fn filtered_zones_compile_and_preserve_abbreviations() {
         // 2-segment canonical zone
-        let london_time = Europe::London.with_ymd_and_hms(2013, 12, 25, 14, 0, 0).unwrap();
+        let london_time = Europe::London
+            .with_ymd_and_hms(2013, 12, 25, 14, 0, 0)
+            .unwrap();
         assert_eq!("Europe/London", Europe::London.name());
         assert_eq!(london_time.offset().abbreviation(), Some("GMT"));
         assert_eq!(london_time.offset().to_string(), "GMT");
@@ -37,7 +39,9 @@ mod tests {
         );
 
         // H1: %z-derived numeric offset returns None for abbreviation() while Display outputs "-01".
-        let gmt_plus_1 = Etc::GMTPlus1.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+        let gmt_plus_1 = Etc::GMTPlus1
+            .with_ymd_and_hms(2026, 6, 1, 12, 0, 0)
+            .unwrap();
         assert_eq!(gmt_plus_1.offset().abbreviation(), None);
         assert_eq!(gmt_plus_1.offset().to_string(), "-01");
         assert_eq!(Tz::from_str("Etc/GMT+1"), Ok(Etc::GMTPlus1));
@@ -93,7 +97,10 @@ mod tests {
                 SubAllocator::new(&mut alloc),
             )
             .unwrap();
-            assert_eq!(from_bytes::<Tz, Failure>(&buf).unwrap(), tz);
+            let mut aligned_tz = Align([0u8; 2]);
+            aligned_tz.0.copy_from_slice(&buf);
+            assert_eq!(access::<ArchivedTz, Failure>(&aligned_tz.0).unwrap(), &tz);
+            assert_eq!(from_bytes::<Tz, Failure>(&aligned_tz.0).unwrap(), tz);
 
             let dt = tz.with_ymd_and_hms(2024, 7, 15, 12, 0, 0).unwrap();
             let off = *dt.offset();
@@ -105,12 +112,33 @@ mod tests {
                 SubAllocator::new(&mut off_alloc),
             )
             .unwrap();
-            assert_eq!(from_bytes::<TzOffset, Failure>(&off_buf).unwrap(), off);
+            let mut aligned_off = Align([0u8; 4]);
+            aligned_off.0.copy_from_slice(&off_buf);
+            assert_eq!(
+                access::<ArchivedTzOffset, Failure>(&aligned_off.0).unwrap(),
+                &off
+            );
+            assert_eq!(
+                from_bytes::<TzOffset, Failure>(&aligned_off.0).unwrap(),
+                off
+            );
+
+            // Deliberately misaligned slices must be rejected by checked access/decoding.
+            let mut unaligned = Align([0u8; 8]);
+            unaligned.0[1..3].copy_from_slice(&aligned_tz.0);
+            assert!(access::<ArchivedTz, Failure>(&unaligned.0[1..3]).is_err());
+            assert!(from_bytes::<Tz, Failure>(&unaligned.0[1..3]).is_err());
+
+            unaligned.0[1..5].copy_from_slice(&aligned_off.0);
+            assert!(access::<ArchivedTzOffset, Failure>(&unaligned.0[1..5]).is_err());
+            assert!(from_bytes::<TzOffset, Failure>(&unaligned.0[1..5]).is_err());
         }
 
         // Discriminant 4 (== TZ_VARIANTS.len()) must fail closed under filter-by-regex.
         let mut bad_tz = Align([0u8; 2]);
-        bad_tz.0.copy_from_slice(&(TZ_VARIANTS.len() as u16).to_le_bytes());
+        bad_tz
+            .0
+            .copy_from_slice(&(TZ_VARIANTS.len() as u16).to_le_bytes());
         assert!(access::<ArchivedTz, Failure>(&bad_tz.0).is_err());
 
         let mut bad_off = Align([0u8; 4]);

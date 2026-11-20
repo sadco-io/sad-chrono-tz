@@ -104,7 +104,7 @@ the top-level binary workspace.
 
 ## Compatibility with `chrono-tz 0.10.4`
 
-`sad-chrono-tz 0.11.0` is API-compatible with `chrono-tz 0.10.4` for the verified runtime surface
+`sad-chrono-tz 0.11.1` is API-compatible with `chrono-tz 0.10.4` for the verified runtime surface
 and supported feature configurations targeting `sad-chrono 0.5` (`0.5.1+`):
 
 * **Public runtime API**: Verified against `chrono-tz 0.10.4` (`Tz`, `TZ_VARIANTS`,
@@ -192,14 +192,18 @@ only if a dependency's security fix requires it.
 | `sad-parse-zoneinfo` | `%z` fractional-minute & overflow panics | `assert!(secs == 0)`, `-i64::MIN` overflow, and `u8` hour truncation | `i128` `unsigned_abs()` formatting supporting seconds and unbounded hours; `try_format_constant` added (`format_constant` documents `# Panics`) |
 | `sad-parse-zoneinfo` | Unbounded rules/transitions, `%s` expansion, `UNTIL` | Unbounded rule scans, `%s` expansion, and ignored terminal/non-monotonic/out-of-range `UNTIL` | Bounded `try_timespans`/`timespans` (`MAX_RULES_PER_RULESET = 4_096`, `MAX_ACTIVE_RULES_PER_YEAR = 256`, `MAX_ZONE_SEGMENTS = 1_024`, `MAX_RULE_EVALUATIONS_PER_ZONE = 500_000`, `MAX_TRANSITIONS_PER_ZONE = 10_000`, `MAX_FORMAT_TEMPLATE_LEN = 256`, `MAX_FORMATTED_NAME_LEN = 64`), precomputes rule base timestamps per active rule per year, validates `UNTIL` ordering in `i128` with `TimestampOutOfRange`, and rejects terminal/non-increasing `UNTIL` |
 | `sad-parse-zoneinfo` | Inline `#` comment & `>= 4`-segment bugs | `Rule::from_str` used `continue` on `#`; `structure.rs` emitted `/` in names | `break` on `#`; hierarchical slash-free tree building with empty-segment guards |
-| `sad-chrono-tz-build` | Codegen validation, regex & partial writes | Unchecked identifiers/collisions, empty-regex `Arbitrary` errors, mid-write panics | Validates Rust identifiers, reserved generator declarations/imports, normalization/case/zone-link collisions, depth `<= 3`, non-empty regex match, `%z` provenance, `i32` bounds & `\|offset\| < 86_400` in memory before writing files (validation errors detected before writing starts leave no files written) |
+| `sad-chrono-tz-build` | Codegen validation, regex & partial writes | Unchecked identifiers/collisions, empty-regex `Arbitrary` errors, mid-write panics | Validates Rust identifiers, reserved generator declarations/imports, normalization/case/zone-link collisions, depth `<= 3`, non-empty regex match, `%z` provenance, `i32` / 20-bit signed component bounds (`-524_288..=524_287` seconds per component), `\|offset\| < 86_400`, transition timestamps within `sad-chrono::DateTime<Utc>` range (`-8_334_601_228_800..=8_210_266_876_799`), and up to `65_535` transition entries per zone beyond the initial span (with `sad-parse-zoneinfo` enforcing `MAX_TRANSITIONS_PER_ZONE = 10_000`) in memory before writing files — custom input outside these bounds fails generation and leaves no files written |
 | `sad-chrono-tz` | Single-clamp spans, PHF length & Serde diagnostics | Premature `saturating_add` in `local_span`; full-string PHF hash; raw unbounded Serde errors | Single-clamp `i128` in `local_span`; `MAX_TZ_NAME_LEN` short-circuit before PHF; `SerdeError` escapes control/quote chars and caps reflected input at `128` bytes on a UTF-8 boundary + `...` |
 
 ## Known Limitations
 
 * Recurring-rule expansion in `sad-parse-zoneinfo` iterates year inputs `1800..2100` with `2100`
   excluded; explicit zone boundaries are processed separately, and lookups extrapolate the first or
-  last generated span outside the table.
+  last generated span outside the table. `TzOffset` validity bounds (`valid_starting`,
+  `valid_until`) and span traversal (`next_offset`, `prev_offset`, `iter`) reflect this generated
+  transition table (span starts are inclusive and span ends are exclusive). Equal `TzOffset` values
+  can have different validity bounds because `TzOffset::eq` compares the zone, both offset
+  components, and abbreviation (while `TzOffsetIter` compares cursor position `(tz, index)`).
 * `Format::format_constant()` panics on non-constant formats (`Alternate`, `Placeholder`, `Offset`);
   direct callers should prefer `Format::try_format_constant()`.
 
@@ -210,17 +214,24 @@ only if a dependency's security fix requires it.
   at `chrono-tz/src/lib.rs`). Disable (`default-features = false`) for `#![no_std]` with zero
   `alloc` usage; `ParseError` implements `core::error::Error` independently of `std`.
 * `serde`: Enables `Serialize` and `Deserialize` for `Tz` via `serde_core`.
-* `rkyv`: Enables `rkyv 0.8` (`0.8.18`) zero-copy `Archive`, `Serialize`, `Deserialize`, and
-  fail-closed `CheckBytes` validation (`ArchivedTz`, `ArchivedTzOffset`) for `Tz`, `TzOffset`, and
-  `sad_chrono::DateTime<Tz>`. Works in `#![no_std]` without `alloc` and does not force a
-  pointer-width feature (compatible with `sad-chrono`'s `rkyv-16`, `rkyv-32`, `rkyv-64`, and
-  `rkyv`). Note that `ArchivedTz` stores the compiled variant index into `TZ_VARIANTS`, so
-  archives must be regenerated if `filter-by-regex` changes the compiled zone set or if a future
-  IANA tzdb release adds or removes variants.
+* `rkyv`: `sad-chrono-tz/rkyv` enables `rkyv 0.8` (`0.8.18`) checked archives (`Archive`,
+  `Serialize`, `Deserialize`, and fail-closed `CheckBytes` validation) for `Tz` (`ArchivedTz`) and
+  `TzOffset` (`ArchivedTzOffset`); checked `sad_chrono::DateTime<Tz>` archives additionally require
+  a `sad-chrono 0.5.1+` `rkyv*` feature (`rkyv-16`, `rkyv-32`, `rkyv-64`, or `rkyv`) and validate
+  the representable local-time range. Use checked access (`rkyv::access` / `rkyv::api::low::access`)
+  and checked decoding (`rkyv::from_bytes` / `rkyv::api::low::from_bytes`) for untrusted bytes.
+  Works in `#![no_std]` without `alloc` and does not force a pointer-width feature. `ArchivedTz`
+  stores a 16-bit zone ordinal. `ArchivedTzOffset` also stores a 16-bit span index. Both fields are
+  little-endian by default. Decode with the same rkyv format configuration and matching ordered zone
+  and transition tables. An in-range index can resolve differently after a filter or tzdb change.
+  `DateTime<Tz>` verification checks local-time representability under `sad-chrono`'s stored-offset
+  contract (applications requiring cross-build table rejection should verify a fingerprint of the
+  generated zone and transition tables before decoding; `IANA_TZDB_VERSION` alone does not detect
+  `filter-by-regex` changes).
 * `case-insensitive`: Enables `Tz::from_str_insensitive` (invokes `sad-chrono-tz-build` at build time).
 * `filter-by-regex`: Filters compiled zones via `CHRONO_TZ_TIMEZONE_FILTER` (invokes `sad-chrono-tz-build`).
 * `arbitrary`: Derives `arbitrary::Arbitrary` for `Tz`.
-* `defmt`: Implements `defmt::Format` for `Tz`, `ParseError`, `TzOffset`, and `FixedTimespan`.
+* `defmt`: Implements `defmt::Format` for `Tz`, `ParseError`, and `TzOffset`.
 
 ## Rust Version Requirements
 

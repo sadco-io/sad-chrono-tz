@@ -106,6 +106,15 @@ fn strip_comments(mut line: String) -> String {
     line
 }
 
+/// Minimum Unix timestamp representable by `sad_chrono::DateTime<Utc>`.
+const MIN_CHRONO_UTC_TIMESTAMP: i64 = -8_334_601_228_800;
+/// Maximum Unix timestamp representable by `sad_chrono::DateTime<Utc>`.
+const MAX_CHRONO_UTC_TIMESTAMP: i64 = 8_210_266_876_799;
+/// Minimum signed 20-bit offset component (`-(1 << 19)`).
+const PACKED_OFFSET_MIN: i64 = -(1 << 19);
+/// Maximum signed 20-bit offset component (`(1 << 19) - 1`).
+const PACKED_OFFSET_MAX: i64 = (1 << 19) - 1;
+
 fn try_validate_timespan(zone: &str, ts: &CodegenTimespan) -> Result<(), String> {
     if i32::try_from(ts.utc_offset).is_err() {
         return Err(format!(
@@ -125,15 +134,15 @@ fn try_validate_timespan(zone: &str, ts: &CodegenTimespan) -> Result<(), String>
             "zone {zone}: total offset {total} out of FixedOffset bounds (-86400..86400)"
         ));
     }
-    if !(-131_072..=131_071).contains(&ts.utc_offset) {
+    if !(PACKED_OFFSET_MIN..=PACKED_OFFSET_MAX).contains(&ts.utc_offset) {
         return Err(format!(
-            "zone {zone}: utc_offset {} out of 18-bit packed range (-131072..=131071)",
+            "zone {zone}: utc_offset {} out of 20-bit packed range ({PACKED_OFFSET_MIN}..={PACKED_OFFSET_MAX})",
             ts.utc_offset
         ));
     }
-    if !(-8_192..=8_191).contains(&ts.dst_offset) {
+    if !(PACKED_OFFSET_MIN..=PACKED_OFFSET_MAX).contains(&ts.dst_offset) {
         return Err(format!(
-            "zone {zone}: dst_offset {} out of 14-bit packed range (-8192..=8191)",
+            "zone {zone}: dst_offset {} out of 20-bit packed range ({PACKED_OFFSET_MIN}..={PACKED_OFFSET_MAX})",
             ts.dst_offset
         ));
     }
@@ -152,12 +161,26 @@ fn pack_timespan(
     zone: &str,
     ts: &CodegenTimespan,
     abbreviations: &str,
-) -> Result<(i32, u16, u8), String> {
+) -> Result<([u8; 5], u16, u8), String> {
     try_validate_timespan(zone, ts)?;
     let utc = ts.utc_offset as i32;
     let dst = ts.dst_offset as i32;
-    let offset = (utc << 14) | (dst & ((1 << 14) - 1));
-    if (offset >> 14) != utc || ((offset << 18) >> 18) != dst {
+    let packed = (((utc as i64 as u64) & 0xF_FFFF) << 20) | ((dst as i64 as u64) & 0xF_FFFF);
+    let offset = [
+        packed as u8,
+        (packed >> 8) as u8,
+        (packed >> 16) as u8,
+        (packed >> 24) as u8,
+        (packed >> 32) as u8,
+    ];
+    let packed_back = (offset[0] as u64)
+        | ((offset[1] as u64) << 8)
+        | ((offset[2] as u64) << 16)
+        | ((offset[3] as u64) << 24)
+        | ((offset[4] as u64) << 32);
+    let utc_back = (((packed_back as i64) << 24) >> 44) as i32;
+    let dst_back = (((packed_back as i64) << 44) >> 44) as i32;
+    if utc_back != utc || dst_back != dst {
         return Err(format!(
             "zone {zone}: packed offset round-trip mismatch for utc={utc}, dst={dst}"
         ));
@@ -231,7 +254,7 @@ fn format_rest(
         let _ = writeln!(
             ret,
             "                ({start}, FixedTimespan {{ \
-             offset: {offset}, abbr_start: {abbr_start}, abbr_len: {abbr_len} \
+             offset: {offset:?}, abbr_len: {abbr_len}, abbr_start: {abbr_start} \
              }}),"
         );
     }
@@ -480,7 +503,12 @@ fn render_timezone_file(
         if let Some(ref name) = timespans.first.name {
             unique_abbrs.insert(name.clone());
         }
-        for (_, ts) in &timespans.rest {
+        for (ts_unix, ts) in &timespans.rest {
+            if !(MIN_CHRONO_UTC_TIMESTAMP..=MAX_CHRONO_UTC_TIMESTAMP).contains(ts_unix) {
+                return Err(format!(
+                    "zone `{zone}`: transition timestamp {ts_unix} out of sad-chrono DateTime<Utc> range ({MIN_CHRONO_UTC_TIMESTAMP}..={MAX_CHRONO_UTC_TIMESTAMP})"
+                ));
+            }
             try_validate_timespan(zone, ts)?;
             if let Some(ref name) = ts.name {
                 unique_abbrs.insert(name.clone());
@@ -697,7 +725,7 @@ impl defmt::Format for Tz {{
         writeln!(
             out,
             "        const {zone}: FixedTimespanSet = FixedTimespanSet {{
-            first: FixedTimespan {{ offset: {offset}, abbr_start: {abbr_start}, abbr_len: {abbr_len} }},
+            first: FixedTimespan {{ offset: {offset:?}, abbr_len: {abbr_len}, abbr_start: {abbr_start} }},
             rest: {rest},
         }};\n",
             zone = zone_name.to_uppercase(),
@@ -1092,28 +1120,28 @@ mod tests {
         let err_utc_packed = try_validate_timespan(
             "UtcPacked/Zone",
             &CodegenTimespan {
-                utc_offset: 131_072,
-                dst_offset: -60_000,
+                utc_offset: 524_288,
+                dst_offset: -450_000,
                 name: Some("U".to_owned()),
             },
         )
         .unwrap_err();
         assert!(
-            err_utc_packed.contains("18-bit packed range"),
+            err_utc_packed.contains("20-bit packed range"),
             "{err_utc_packed}"
         );
 
         let err_dst_packed = try_validate_timespan(
             "DstPacked/Zone",
             &CodegenTimespan {
-                utc_offset: 0,
-                dst_offset: 8_192,
+                utc_offset: 450_000,
+                dst_offset: -524_289,
                 name: Some("D".to_owned()),
             },
         )
         .unwrap_err();
         assert!(
-            err_dst_packed.contains("14-bit packed range"),
+            err_dst_packed.contains("20-bit packed range"),
             "{err_dst_packed}"
         );
 
@@ -1140,6 +1168,8 @@ mod tests {
             (54_822, 7_200, Some("EST"), 5, 3),
             (-18_000, 0, None, 0, u8::MAX),
             (-18_000, 3_600, Some("ST"), 6, 2),
+            (0, 10_800, Some("EST"), 5, 3),
+            (-524_288, 524_287, Some("EST"), 5, 3),
         ] {
             let ts = CodegenTimespan {
                 utc_offset: utc,
@@ -1147,11 +1177,52 @@ mod tests {
                 name: name.map(str::to_owned),
             };
             let (offset, start, len) = pack_timespan("Test/Zone", &ts, abbrs).unwrap();
-            assert_eq!((offset >> 14) as i64, utc);
-            assert_eq!(((offset << 18) >> 18) as i64, dst);
+            let packed = (offset[0] as u64)
+                | ((offset[1] as u64) << 8)
+                | ((offset[2] as u64) << 16)
+                | ((offset[3] as u64) << 24)
+                | ((offset[4] as u64) << 32);
+            assert_eq!((((packed as i64) << 24) >> 44), utc);
+            assert_eq!((((packed as i64) << 44) >> 44), dst);
             assert_eq!(start, expected_start);
             assert_eq!(len, expected_len);
         }
+    }
+
+    #[test]
+    fn custom_zone_with_3h_dst_succeeds_and_decodes() {
+        let t = parse_table("Zone Custom/ThreeHourDst 0 3:00 CDST\n");
+        let z: BTreeSet<&str> = ["Custom/ThreeHourDst"].into_iter().collect();
+        let (tz_rs, _) = generate_files_in_memory(&t, &z, false, "2026f").unwrap();
+
+        let (expected_offset, expected_start, expected_len) = pack_timespan(
+            "Custom/ThreeHourDst",
+            &CodegenTimespan {
+                utc_offset: 0,
+                dst_offset: 10_800,
+                name: Some("CDST".to_owned()),
+            },
+            "CDST",
+        )
+        .unwrap();
+        let packed = (expected_offset[0] as u64)
+            | ((expected_offset[1] as u64) << 8)
+            | ((expected_offset[2] as u64) << 16)
+            | ((expected_offset[3] as u64) << 24)
+            | ((expected_offset[4] as u64) << 32);
+        assert_eq!((((packed as i64) << 24) >> 44), 0);
+        assert_eq!((((packed as i64) << 44) >> 44), 10_800);
+        assert!(tz_rs.contains(&format!(
+            "FixedTimespan {{ offset: {expected_offset:?}, abbr_len: {expected_len}, abbr_start: {expected_start} }}"
+        )));
+    }
+
+    #[test]
+    fn rejects_unrepresentable_finite_transition_timestamp_until_300000() {
+        let t = parse_table("Zone Custom/FarFuture 0 - LMT 300000\n 1:00 - FF\n");
+        let z: BTreeSet<&str> = ["Custom/FarFuture"].into_iter().collect();
+        let err = generate_files_in_memory(&t, &z, false, "2026f").unwrap_err();
+        assert!(err.contains("DateTime<Utc> range"), "{err}");
     }
 
     #[test]
@@ -1255,7 +1326,7 @@ mod tests {
         let (tz_rs2, dir_rs2) = generate_files_in_memory(&t, &both, false, "2026f").unwrap();
         assert!(tz_rs2.contains("pub(crate) const ABBREVIATIONS: &str = \"-0330\";"));
         assert!(tz_rs2.contains("abbr_len: 255"));
-        assert!(tz_rs2.contains("abbr_start: 0, abbr_len: 5"));
+        assert!(tz_rs2.contains("abbr_len: 5, abbr_start: 0"));
         assert!(dir_rs2.contains("pub mod Argentina"));
         assert!(dir_rs2.contains("pub const Buenos_Aires: Tz"));
     }

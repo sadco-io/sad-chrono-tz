@@ -1040,8 +1040,10 @@ mod tests {
     #[test]
     fn test_type_size() {
         use super::TzOffset;
+        use crate::timezone_impl::FixedTimespan;
         use sad_chrono::DateTime;
 
+        assert_eq!(core::mem::size_of::<FixedTimespan>(), 8);
         assert!(core::mem::size_of::<TzOffset>() <= 8);
         assert!(core::mem::size_of::<DateTime<Tz>>() <= 24);
         #[cfg(not(feature = "filter-by-regex"))]
@@ -1049,6 +1051,14 @@ mod tests {
             assert_eq!(core::mem::size_of::<TzOffset>(), 4);
             assert_eq!(core::mem::size_of::<DateTime<Tz>>(), 16);
         }
+    }
+
+    #[test]
+    fn sad_chrono_utc_timestamp_bounds_match_codegen_constants() {
+        use sad_chrono::{DateTime, Utc};
+
+        assert_eq!(DateTime::<Utc>::MIN_UTC.timestamp(), -8_334_601_228_800);
+        assert_eq!(DateTime::<Utc>::MAX_UTC.timestamp(), 8_210_266_876_799);
     }
 
     #[test]
@@ -1061,6 +1071,8 @@ mod tests {
         let tor_jan_2024 = Toronto.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap();
 
         assert_eq!(ny_jan_2024.offset(), ny_jan_2025.offset());
+        assert_ne!(ny_jan_2024.offset().iter(), ny_jan_2025.offset().iter());
+        assert_eq!(ny_jan_2024.offset().iter(), ny_jan_2024.offset().iter());
         assert_ne!(ny_jan_2024.offset(), ny_jul_2024.offset());
         assert_ne!(ny_jan_2024.offset(), tor_jan_2024.offset());
     }

@@ -28,7 +28,9 @@ jobs:
       - run: cargo fmt --all -- --check --color=always
       - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check --color=always
       - run: cargo fmt --manifest-path chrono-tz/tests/check-rename/Cargo.toml -- --check --color=always
+      - run: cargo fmt --manifest-path chrono-tz/tests/check-regex-filtering/Cargo.toml -- --check --color=always
       - run: cargo fmt --manifest-path chrono-tz/tests/check-rkyv/Cargo.toml -- --check --color=always
+      - run: cargo fmt --manifest-path chrono-tz/tests/check-nostd/Cargo.toml -- --check --color=always
       - run: |
           cargo clippy --workspace --all-targets --color=always -- -D warnings
       - run: |
@@ -118,9 +120,9 @@ jobs:
       - name: Check semver compatibility against published sad-chrono-tz
         run: |
           cargo +1.100.0 semver-checks check-release --manifest-path chrono-tz/Cargo.toml \
-            --release-type minor --default-features
+            --baseline-version 0.11.0 --release-type minor --default-features
           cargo +1.100.0 semver-checks check-release --manifest-path chrono-tz/Cargo.toml \
-            --release-type minor \
+            --baseline-version 0.11.0 --release-type minor \
             --only-explicit-features --features default,serde,arbitrary,defmt,case-insensitive,filter-by-regex
 
   package:
